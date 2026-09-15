@@ -8,9 +8,18 @@ import type { Passage } from '../lib/types';
  *   劉孝標注 removed. They are marked `verified: false`.
  *   They MUST be collated against 三民《新譯世說新語》 and 余嘉錫《世說新語箋疏》 before
  *   collection; flip `verified` to true only after that, and record the editions used.
- * - Annotations and target-sentence explanations below are DRAFTS written by the system
- *   author, not taken from an annotated edition. Every entry marked `draft: true` must be
- *   replaced or confirmed. `npm run validate:content` fails while drafts remain.
+ * - ANNOTATION GLOSSES (2026-09): each single-word gloss below is copied from a named
+ *   dictionary and carries its `source`. Sources used:
+ *     萌典 / 教育部《重編國語辭典修訂本》  https://www.moedict.tw/<詞>
+ *     漢典 (for entries 教育部辭典 does not carry)  https://www.zdic.net/hans/<詞>
+ *     法鼓文理學院 人名規範資料庫  https://authority.dila.edu.tw/person/
+ *     維基百科 (proper nouns only)
+ *   Where a gloss joins two dictionary entries into one compound (絝𧟌, 條榦, 鐵如意,
+ *   烝㹠), the join is the system author's, not the dictionary's, and is marked 「合指」.
+ *   A 中文系 reviewer must still sign these off before collection.
+ * - Target-sentence explanations below are DRAFTS written by the system author, not taken
+ *   from an annotated edition. Every entry marked `draft: true` must be replaced or
+ *   confirmed. `npm run validate:content` fails while drafts remain.
  * - S6 uses an external, officially answered item set (澳門四高校聯合入學考試). Its passage
  *   text and items are NOT included here because they must come from the official PDF.
  */
@@ -36,9 +45,24 @@ export const PRETEST_PASSAGE: Passage = {
   text: PRETEST_TEXT,
   charCount: countChars(PRETEST_TEXT),
   annotations: [
-    { term: '甲煎粉', gloss: '（待填：香料製成的粉）', kind: 'rare_word' },
-    { term: '沈香汁', gloss: '（待填）', kind: 'rare_word' },
-    { term: '王大將軍', gloss: '（待填：王敦）', kind: 'proper_noun' },
+    {
+      term: '甲煎粉',
+      gloss: '甲煎：古代香料，以甲香調合沉香、麝香等製成，可作口脂、薰香或入藥。甲煎粉即這種香粉。',
+      kind: 'rare_word',
+      source: '漢典 https://www.zdic.net/hans/甲煎（教育部《重編國語辭典修訂本》無此條）',
+    },
+    {
+      term: '沈香汁',
+      gloss: '沈香同「沉香」：瑞香科香木，木質沉重有香氣，可作薰香料及藥材。合指沈香製成的香汁。',
+      kind: 'rare_word',
+      source: '萌典/教育部辭典「沉香」 https://www.moedict.tw/沉香；漢典「沈香」 https://www.zdic.net/hans/沈香',
+    },
+    {
+      term: '王大將軍',
+      gloss: '王敦（266–324），字處仲，東晉初官至大將軍。',
+      kind: 'proper_noun',
+      source: '維基百科「王敦」 https://zh.wikipedia.org/wiki/王敦',
+    },
   ],
   targets: [],
 };
@@ -51,16 +75,67 @@ export const LEARNING_PASSAGE: Passage = {
   text: T2_TEXT,
   charCount: countChars(T2_TEXT),
   annotations: [
-    { term: '瑠璃器', gloss: '（待填）', kind: 'rare_word' },
-    { term: '綾羅絝𧟌', gloss: '（待填）', kind: 'rare_word' },
-    { term: '烝㹠', gloss: '（待填）', kind: 'rare_word' },
-    { term: '扶疎', gloss: '（待填）', kind: 'rare_word' },
-    { term: '條榦', gloss: '（待填）', kind: 'rare_word' },
-    { term: '鐵如意', gloss: '（待填）', kind: 'rare_word' },
-    { term: '武帝', gloss: '（待填：晉武帝司馬炎）', kind: 'proper_noun' },
-    { term: '王武子', gloss: '（待填）', kind: 'proper_noun' },
-    { term: '石崇', gloss: '（待填）', kind: 'proper_noun' },
-    { term: '王愷', gloss: '（待填）', kind: 'proper_noun' },
+    {
+      term: '瑠璃器',
+      gloss: '瑠璃同「琉璃」：青色的寶石，或指燒製的琉璃料。合指琉璃製的器皿。',
+      kind: 'rare_word',
+      source: '萌典/教育部辭典「琉璃」 https://www.moedict.tw/琉璃',
+    },
+    {
+      term: '綾羅絝𧟌',
+      gloss: '綾羅：細緻柔軟而有光彩的絲織品。絝：「褲」的異體字。𧟌（ㄌㄨㄛˋ）：古代婦女的上衣。合指絲質的衣褲。',
+      kind: 'rare_word',
+      source:
+        '萌典「綾羅」 https://www.moedict.tw/綾羅；萌典「絝」 https://www.moedict.tw/絝；漢典「𧟌」 https://www.zdic.net/hans/%F0%A7%9F%8C',
+    },
+    {
+      term: '烝㹠',
+      gloss: '烝：用熱水氣蒸東西。㹠：「豚」的異體字，小豬。合指蒸乳豬。',
+      kind: 'rare_word',
+      source: '萌典「烝」 https://www.moedict.tw/烝；萌典「㹠」 https://www.moedict.tw/㹠',
+    },
+    {
+      term: '扶疎',
+      gloss: '同「扶疏」：枝葉茂盛分披的樣子。',
+      kind: 'rare_word',
+      source: '萌典/教育部辭典「扶疏」 https://www.moedict.tw/扶疏',
+    },
+    {
+      term: '條榦',
+      gloss: '榦（ㄍㄢˋ）：事物的主體，此指樹幹。合指珊瑚樹的枝與幹。',
+      kind: 'rare_word',
+      source: '萌典「榦」 https://www.moedict.tw/榦',
+    },
+    {
+      term: '鐵如意',
+      gloss: '如意：原為搔背的用具，後演變為象徵吉祥的擺飾。合指鐵製的如意。',
+      kind: 'rare_word',
+      source: '教育部《重編國語辭典修訂本》「如意」（dictView ID=136449）',
+    },
+    {
+      term: '武帝',
+      gloss: '晉武帝司馬炎，西晉開國皇帝。',
+      kind: 'proper_noun',
+      source: '法鼓文理學院人名規範資料庫 A017804（該條記常山公主為司馬炎之女、司馬炎為西晉首位皇帝）',
+    },
+    {
+      term: '王武子',
+      gloss: '王濟，字武子，太尉王渾之子，娶晉武帝之女常山公主。',
+      kind: 'proper_noun',
+      source: '法鼓文理學院人名規範資料庫 https://authority.dila.edu.tw/person/search.php?aid=A017804',
+    },
+    {
+      term: '石崇',
+      gloss: '石崇（249–300），字季倫，西晉鉅富，以與王愷鬥富著名。',
+      kind: 'proper_noun',
+      source: '維基百科「石崇」 https://zh.wikipedia.org/wiki/石崇',
+    },
+    {
+      term: '王愷',
+      gloss: '王愷，字君夫，其姊王元姬為晉武帝之母，故武帝稱其為舅；以與石崇鬥富著名。',
+      kind: 'proper_noun',
+      source: '維基百科「王愷」 https://zh.wikipedia.org/wiki/王愷_(西晉)',
+    },
   ],
   targets: [
     {
@@ -149,15 +224,39 @@ export const TRANSFER_PASSAGE: Passage = {
   targets: [],
 };
 
-/** S6: supplied by the researcher from the official paper. Empty until then. */
+/**
+ * S6 延宕測驗用篇章：《周書·卷四十一·王褒傳》節選。
+ *
+ * 取得方式：澳門四高校聯合入學考試（四校聯考）2024 年中文科「試題及參考答案」官方 PDF
+ *   https://aecm.org.mo/wp-content/uploads/2024-試題及參考答案-中文.pdf
+ *   （列於 https://aecm.org.mo/fmaecm/past-papers/ ）
+ * 底本身份：《周書》為唐·令狐德棻等撰，屬公有領域；此處的節選範圍與斷句依官方試卷。
+ *
+ * 尚未完成的查核（故 verified: false）：
+ *  1. 本段文字是經 PDF 轉文字取得，尚未逐字對照原卷版面。特別注意「左仆射」一處，
+ *     澳門試卷用正體，原卷極可能作「左僕射」，需以人眼核對 PDF 後改正。
+ *  2. 尚未與《周書》通行點校本（中華書局點校本）對校。本工作階段無法取用
+ *     維基文庫與 ctext（前者在此環境不可擷取，後者禁止自動擷取）。
+ *
+ * 授權：S6-01..05 為官方試題原文，僅作學術研究之測驗工具使用，已標明出處。
+ * 若日後要公開發表題目全文，需另行向澳門四高校聯合入學考試辦公室確認授權。
+ */
+const S6_TEXT =
+  '王褒，字子淵，瑯邪臨沂人也。曾祖儉，齊侍中、太尉、南昌文憲公。祖騫，梁侍中、金紫光祿大夫、南昌安侯。父規，梁侍中、左民尚書、南昌章侯。並有重名於江左。' +
+  '褒識量淹通，志懷沉靜，美風儀，善談笑，博覽史傳，尤工屬文。梁國子祭酒蕭子雲，褒之姑父也，特善草、隸。褒少以姻戚，去來其家，遂相模範，俄而名亞子雲，並見重於世。' +
+  '梁武帝喜其才藝，遂以弟鄱陽王恢之女妻之。起家秘書郎，轉太子舍人，襲爵南昌縣侯，稍遷秘書丞。宣成王大器，簡文帝之冢嫡，即褒之姑子也。於時盛選僚佐，乃以褒為文學。' +
+  '尋遷安成郡守。及侯景渡江，建業擾亂，褒輯寧所部，見稱於時。' +
+  '梁元帝承制，轉智武將軍，南平內史。及嗣位於江陵，欲待褒以不次之位，褒時猶在郡，敕王僧辯以禮發遣，褒乃將家西上。元帝與褒有舊，相得甚歡。拜侍中，累遷禮部尚書、左仆射。' +
+  '褒既世胄名家，文學優贍，當時咸相推挹，故旬月之間，位升端右，寵遇日隆。而褒愈自謙虛，不以位地矜人，時論稱之。';
+
 export const DELAYED_PASSAGE: Passage = {
   id: 'S6',
-  title: '（待填：澳門四高校聯合入學考試 2024《周書·王褒傳》節選）',
-  source: '（待填：官方試題 PDF）',
+  title: '周書·王褒傳（節選）',
+  source: '澳門四高校聯合入學考試 2024 中文科試卷（底本：《周書》卷四十一，唐·令狐德棻等撰）',
   verified: false,
-  text: '',
-  charCount: 0,
-  annotations: [],
+  text: S6_TEXT,
+  charCount: countChars(S6_TEXT),
+  annotations: [], // 延宕測驗依設計不提供注解
   targets: [],
 };
 

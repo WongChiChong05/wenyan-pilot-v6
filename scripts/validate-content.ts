@@ -35,8 +35,25 @@ if (ITEMS_BY_STAGE.S5.some((i) => i.level === 'check')) {
 
 for (const item of ALL_ITEMS) {
   const fields = [item.stem, ...item.options, item.evidence, item.source];
-  if (item.draft || fields.some((f) => f.includes('【待填】'))) {
-    errors.push(`item ${item.id}: still a placeholder`);
+  if (fields.some((f) => f.includes('\u3010\u5f85\u586b\u3011'))) {
+    errors.push(`item ${item.id}: still a placeholder (content not written)`);
+  } else if (item.draft) {
+    errors.push(`item ${item.id}: written but awaiting reviewer sign-off (draft: true)`);
+  }
+  // The evidence sentence must actually be in the passage it points at, or the answer
+  // source is unfalsifiable. 「……」 marks an intentional cut; each side is checked separately.
+  if (!item.attentionCheck && item.evidence.trim().length > 0 && !item.evidence.includes('\u3010')) {
+    const passage = PASSAGES[item.passageId];
+    if (!passage) {
+      errors.push(`item ${item.id}: unknown passageId ${item.passageId}`);
+    } else if (passage.text.trim().length > 0) {
+      for (const part of item.evidence.split('\u2026\u2026')) {
+        const chunk = part.trim();
+        if (chunk.length > 0 && !passage.text.includes(chunk)) {
+          errors.push(`item ${item.id}: evidence not found in passage ${item.passageId}: 「${chunk}」`);
+        }
+      }
+    }
   }
   if (new Set(item.options).size !== item.options.length) {
     errors.push(`item ${item.id}: duplicate options`);

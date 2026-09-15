@@ -28,6 +28,8 @@ export interface Annotation {
   term: string; // surface form as it appears in the passage
   gloss: string; // meaning; rare words and proper nouns ONLY
   kind: 'rare_word' | 'proper_noun' | 'allusion';
+  /** Where the gloss came from. Required in practice: every gloss must be traceable. */
+  source?: string;
 }
 
 /** A target sentence in the learning passage. Both AI arms use the SAME explanation text. */
