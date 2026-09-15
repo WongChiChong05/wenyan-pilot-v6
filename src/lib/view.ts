@@ -1,5 +1,5 @@
-import { ITEMS_BY_STAGE } from '@/content/items';
-import { DELAYED_PASSAGE, LEARNING_PASSAGE, PRETEST_PASSAGE, TRANSFER_PASSAGE } from '@/content/passages';
+import { ITEMS_BY_STAGE } from '../content/items';
+import { DELAYED_PASSAGE, LEARNING_PASSAGE, PRETEST_PASSAGE, TRANSFER_PASSAGE } from '../content/passages';
 import { CONFIG } from './config';
 import { stageLimits } from './engine';
 import { lowerBoundMet } from './highlight';

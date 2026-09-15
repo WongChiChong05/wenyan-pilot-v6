@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { LEARNING_PASSAGE } from '@/content/passages';
+import { LEARNING_PASSAGE } from '../content/passages';
 import { CONFIG } from './config';
 import { classifyGranularity, lowerBoundMet, matchTarget } from './highlight';
 import { endPosition, initialLadder, reduce, explanationAllowed } from './ladder';

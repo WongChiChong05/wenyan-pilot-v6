@@ -1,4 +1,4 @@
-import type { Item } from '@/lib/types';
+import type { Item } from '../lib/types';
 
 /**
  * TEST ITEMS.

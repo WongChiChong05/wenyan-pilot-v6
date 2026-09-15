@@ -1,4 +1,4 @@
-import type { Passage } from '@/lib/types';
+import type { Passage } from '../lib/types';
 
 /**
  * 教材 (reading materials).
