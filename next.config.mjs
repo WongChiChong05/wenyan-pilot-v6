@@ -1,8 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // Answer keys live only in server code; fail the build if anything imports them client-side.
-  experimental: { typedRoutes: false },
+  typedRoutes: false,
+  serverExternalPackages: ['pg'],
+  // Never bundle local research records or backups into a serverless deployment.
+  outputFileTracingExcludes: {
+    '/**': ['./data/**/*', './backups/**/*', './tmp/**/*', './.verify/**/*'],
+  },
 };
 
 export default nextConfig;

@@ -1,0 +1,501 @@
+<title>Socratic Ladder</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --paper: #f4f6f9;
+    --surface: #ffffff;
+    --surface-2: #eaeef4;
+    --ink: #161a21;
+    --muted: #5a6472;
+    --line: #ccd4de;
+    --line-soft: #e2e8ef;
+    --lane: #1f5f8b;
+    --gate: #a8452c;
+    --goal: #2c6a48;
+    --shadow: 0 1px 2px rgba(22, 26, 33, .06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #12151a;
+      --surface: #191d24;
+      --surface-2: #222833;
+      --ink: #e6eaf0;
+      --muted: #9aa5b4;
+      --line: #39414e;
+      --line-soft: #2a313b;
+      --lane: #6fb2dd;
+      --gate: #e08a72;
+      --goal: #78c39a;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #12151a;
+    --surface: #191d24;
+    --surface-2: #222833;
+    --ink: #e6eaf0;
+    --muted: #9aa5b4;
+    --line: #39414e;
+    --line-soft: #2a313b;
+    --lane: #6fb2dd;
+    --gate: #e08a72;
+    --goal: #78c39a;
+    --shadow: none;
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+  }
+  .wrap {
+    max-width: 940px;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 40px 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 44px;
+  }
+
+  h1, h2, h3 { font-family: Spectral, Georgia, serif; font-weight: 600; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(30px, 5vw, 42px); line-height: 1.15; letter-spacing: -.01em; }
+  h2 { font-size: 22px; }
+  h3 { font-size: 16px; font-family: "IBM Plex Sans", sans-serif; font-weight: 600; }
+  p { margin: 0; max-width: 68ch; }
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: .88em; }
+  code { background: var(--surface-2); padding: 1px 5px; border-radius: 3px; }
+  .zh { font-family: "Noto Serif TC", "Songti TC", "PingFang TC", "Microsoft JhengHei", serif; }
+
+  .eyebrow {
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600; margin: 0;
+  }
+  header { display: flex; flex-direction: column; gap: 12px; }
+  header p.lede { font-size: 17px; color: var(--muted); }
+
+  section { display: flex; flex-direction: column; gap: 16px; }
+
+  figure {
+    margin: 0; background: var(--surface); border: 1px solid var(--line-soft);
+    border-radius: 6px; box-shadow: var(--shadow);
+    padding: 20px 16px 16px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .scroll { overflow-x: auto; }
+  svg { display: block; max-width: 100%; height: auto; min-width: 640px; }
+  figcaption { font-size: 13px; color: var(--muted); max-width: 72ch; }
+
+  /* diagram vocabulary */
+  .b-fill { fill: var(--surface-2); }
+  .b-line { fill: none; stroke: var(--line); stroke-width: 1.2; }
+  .b-lane { fill: none; stroke: var(--lane); stroke-width: 1.6; }
+  .b-goal { fill: none; stroke: var(--goal); stroke-width: 1.6; }
+  .b-gate { fill: none; stroke: var(--gate); stroke-width: 1.4; stroke-dasharray: 5 4; }
+  .t { fill: var(--ink); font-family: "IBM Plex Sans", sans-serif; font-size: 13px; }
+  .t-strong { font-weight: 600; }
+  .t-sm { fill: var(--muted); font-size: 11.5px; }
+  .t-lane { fill: var(--lane); font-size: 11.5px; font-weight: 500; }
+  .t-gate { fill: var(--gate); font-size: 11.5px; font-weight: 500; }
+  .t-goal { fill: var(--goal); font-size: 11.5px; font-weight: 500; }
+  .t-num { fill: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .08em; }
+
+  .rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+  .rules li {
+    display: grid; grid-template-columns: 20px 1fr; gap: 12px; align-items: start;
+    padding-bottom: 14px; border-bottom: 1px solid var(--line-soft);
+  }
+  .rules li:last-child { border-bottom: none; padding-bottom: 0; }
+  .rules .n { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--lane); padding-top: 2px; }
+  .rules strong { font-weight: 600; }
+  .rules span.body { color: var(--muted); display: block; }
+
+  .example {
+    background: var(--surface); border: 1px solid var(--line-soft); border-radius: 6px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .step { display: grid; grid-template-columns: 78px 1fr; border-top: 1px solid var(--line-soft); }
+  .step:first-child { border-top: none; }
+  .step .tag {
+    padding: 16px 12px; font-family: "IBM Plex Mono", monospace; font-size: 11px;
+    letter-spacing: .06em; color: var(--muted); background: var(--surface-2);
+    border-right: 1px solid var(--line-soft);
+  }
+  .step .tag.win { color: var(--goal); }
+  .step .body { padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .step .q { font-size: 15px; }
+  .opts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+  .opts li {
+    font-size: 13.5px; border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 12px; color: var(--muted);
+  }
+  .opts li.key { border-color: var(--goal); color: var(--goal); }
+  .ask { font-size: 13px; color: var(--muted); font-style: italic; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  td.no { color: var(--muted); }
+
+  .note {
+    border-left: 3px solid var(--gate); padding: 4px 0 4px 16px;
+    font-size: 14px; color: var(--muted);
+  }
+  .note strong { color: var(--ink); font-weight: 600; }
+
+  footer { font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--line-soft); padding-top: 18px; }
+
+  @media (max-width: 560px) {
+    .step { grid-template-columns: 1fr; }
+    .step .tag { border-right: none; border-bottom: 1px solid var(--line-soft); padding: 8px 16px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Pilot study · classical Chinese reading · stage S2</p>
+    <h1>Socratic Ladder</h1>
+    <p class="lede">
+      How the questioning arm decides when a reader is allowed to see the explanation —
+      and why a correct answer alone is not enough.
+    </p>
+  </header>
+
+  <section>
+    <h2>The three rungs</h2>
+    <p>
+      A reader in the <strong>questioning arm</strong> clicks one of the four target sentences.
+      Every rung has the same shape: a three-option multiple choice, plus a written reason.
+      The pick is recognition; the reason is production. The reader never faces a blank box
+      asking what the answer is — only why they chose it.
+    </p>
+
+    <figure>
+      <div class="scroll">
+        <svg viewBox="0 0 900 604" role="img"
+             aria-label="Flow diagram: a reader's highlight enters Layer 1, a three-option choice with a written reason. A rejected reason returns to the same rung, at most twice. An accepted reason with a wrong pick drops to Layer 2, then to Layer 3. An accepted reason with a correct pick goes straight to the explanation. Layer 3 reaches the explanation whether the pick was right or wrong. All paths converge on one explanation, then on the reader clicking done.">
+          <defs>
+            <marker id="ar-lane" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--lane)"></path>
+            </marker>
+            <marker id="ar-gate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--gate)"></path>
+            </marker>
+            <marker id="ar-goal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--goal)"></path>
+            </marker>
+          </defs>
+
+          <!-- entry -->
+          <rect class="b-fill" x="40" y="16" width="250" height="40" rx="5"></rect>
+          <rect class="b-line" x="40" y="16" width="250" height="40" rx="5"></rect>
+          <text class="t" x="165" y="41" text-anchor="middle">Reader clicks a target sentence</text>
+          <path class="b-lane" d="M 165 56 V 92" marker-end="url(#ar-lane)"></path>
+
+          <!-- LAYER 1 -->
+          <rect class="b-fill" x="40" y="96" width="250" height="62" rx="5"></rect>
+          <rect class="b-line" x="40" y="96" width="250" height="62" rx="5"></rect>
+          <text class="t-num" x="56" y="117">LAYER 1</text>
+          <text class="t t-strong" x="56" y="136">Observation choice</text>
+          <text class="t-sm" x="56" y="151">what sits next to the word</text>
+
+          <rect class="b-fill" x="350" y="96" width="230" height="62" rx="5"></rect>
+          <rect class="b-gate" x="350" y="96" width="230" height="62" rx="5"></rect>
+          <text class="t t-strong" x="465" y="124" text-anchor="middle">Reason gate</text>
+          <text class="t-sm" x="465" y="141" text-anchor="middle">is there a reason at all?</text>
+
+          <path class="b-lane" d="M 290 127 H 344" marker-end="url(#ar-lane)"></path>
+          <text class="t-lane" x="317" y="119" text-anchor="middle">picks + writes why</text>
+
+          <path class="b-gate" d="M 395 158 V 186 H 120 V 162" marker-end="url(#ar-gate)"></path>
+          <text class="t-gate" x="258" y="181" text-anchor="middle">rejected — same rung again</text>
+
+          <path class="b-lane" d="M 520 158 V 210 H 165 V 232" marker-end="url(#ar-lane)"></path>
+          <text class="t-lane" x="345" y="205" text-anchor="middle">accepted, pick wrong</text>
+
+          <path class="b-goal" d="M 580 127 H 634" marker-end="url(#ar-goal)"></path>
+          <text class="t-goal" x="607" y="119" text-anchor="middle">correct</text>
+
+          <!-- LAYER 2 -->
+          <rect class="b-fill" x="40" y="236" width="250" height="62" rx="5"></rect>
+          <rect class="b-line" x="40" y="236" width="250" height="62" rx="5"></rect>
+          <text class="t-num" x="56" y="257">LAYER 2</text>
+          <text class="t t-strong" x="56" y="276">Observation choice</text>
+          <text class="t-sm" x="56" y="291">what the phrase is doing</text>
+
+          <rect class="b-fill" x="350" y="236" width="230" height="62" rx="5"></rect>
+          <rect class="b-gate" x="350" y="236" width="230" height="62" rx="5"></rect>
+          <text class="t t-strong" x="465" y="264" text-anchor="middle">Reason gate</text>
+          <text class="t-sm" x="465" y="281" text-anchor="middle">is there a reason at all?</text>
+
+          <path class="b-lane" d="M 290 267 H 344" marker-end="url(#ar-lane)"></path>
+          <path class="b-gate" d="M 395 298 V 326 H 120 V 302" marker-end="url(#ar-gate)"></path>
+          <text class="t-gate" x="258" y="321" text-anchor="middle">rejected — same rung again</text>
+          <path class="b-lane" d="M 520 298 V 350 H 165 V 372" marker-end="url(#ar-lane)"></path>
+          <text class="t-lane" x="345" y="345" text-anchor="middle">accepted, pick wrong</text>
+          <path class="b-goal" d="M 580 267 H 634" marker-end="url(#ar-goal)"></path>
+          <text class="t-goal" x="607" y="259" text-anchor="middle">correct</text>
+
+          <!-- LAYER 3 -->
+          <rect class="b-fill" x="40" y="376" width="250" height="62" rx="5"></rect>
+          <rect class="b-line" x="40" y="376" width="250" height="62" rx="5"></rect>
+          <text class="t-num" x="56" y="397">LAYER 3 · BOTTOM-OUT</text>
+          <text class="t t-strong" x="56" y="416">Answer choice</text>
+          <text class="t-sm" x="56" y="431">what the word actually does</text>
+
+          <rect class="b-fill" x="350" y="376" width="230" height="62" rx="5"></rect>
+          <rect class="b-gate" x="350" y="376" width="230" height="62" rx="5"></rect>
+          <text class="t t-strong" x="465" y="404" text-anchor="middle">Reason gate</text>
+          <text class="t-sm" x="465" y="421" text-anchor="middle">is there a reason at all?</text>
+
+          <path class="b-lane" d="M 290 407 H 344" marker-end="url(#ar-lane)"></path>
+          <path class="b-gate" d="M 395 438 V 466 H 120 V 442" marker-end="url(#ar-gate)"></path>
+          <text class="t-gate" x="258" y="461" text-anchor="middle">rejected — same rung again</text>
+          <path class="b-goal" d="M 580 407 H 634" marker-end="url(#ar-goal)"></path>
+          <text class="t-goal" x="607" y="399" text-anchor="middle">either way</text>
+
+          <!-- EXPLANATION -->
+          <rect class="b-fill" x="640" y="96" width="220" height="342" rx="5"></rect>
+          <rect class="b-goal" x="640" y="96" width="220" height="342" rx="5"></rect>
+          <text class="t t-strong" x="750" y="252" text-anchor="middle">Explanation</text>
+          <text class="t-sm" x="750" y="270" text-anchor="middle">one pre-written text,</text>
+          <text class="t-sm" x="750" y="285" text-anchor="middle">word for word the same</text>
+          <text class="t-sm" x="750" y="300" text-anchor="middle">as the direct arm's</text>
+
+          <path class="b-goal" d="M 750 438 V 486" marker-end="url(#ar-goal)"></path>
+
+          <rect class="b-fill" x="600" y="490" width="260" height="46" rx="5"></rect>
+          <rect class="b-line" x="600" y="490" width="260" height="46" rx="5"></rect>
+          <text class="t" x="730" y="511" text-anchor="middle">Reader clicks “done reading”</text>
+          <text class="t-sm" x="730" y="527" text-anchor="middle">sentence recorded · passage unlocks</text>
+
+          <!-- forced-through note -->
+          <path class="b-gate" d="M 170 500 V 476" marker-end="url(#ar-gate)"></path>
+          <text class="t-gate" x="180" y="516" text-anchor="start">after 2 rejections the reader is let through,</text>
+          <text class="t-gate" x="180" y="532" text-anchor="start">flagged reasonInsufficient — nobody is trapped</text>
+        </svg>
+      </div>
+      <figcaption>
+        Three rungs, one destination. The explanation is unreachable until the reader has both
+        chosen and justified — and once reached, it is the same text every arm receives.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>Why a correct pick is not enough</h2>
+    <p class="note">
+      A three-option choice is right <strong>one time in three</strong> by luck. If a correct pick alone
+      opened the explanation, roughly a third of readers would skip the ladder entirely — and for them
+      the questioning manipulation would simply not have happened. The reason gate is the only thing
+      standing between the study and that hole.
+    </p>
+    <p>
+      The gate judges whether a reason <em>exists</em>, not whether it is right. A wrong but reasoned
+      answer passes. <span class="zh">「不知道」</span>, <span class="zh">「猜的」</span> and bare echoes of an
+      option do not. Unclear cases go to the model. Two rejections per rung is the budget; the third
+      attempt is forced through and flagged <code>reasonInsufficient</code>, so a reader can be slowed
+      down but never stuck.
+    </p>
+  </section>
+
+  <section>
+    <h2>A worked sentence</h2>
+    <p>
+      Target sentence <span class="zh">「以鐵如意擊之，應手而碎」</span> — the language point is
+      <span class="zh">「之」</span> as a pronoun. Rungs 1 and 2 ask about <em>observations</em>:
+      what part of speech sits beside the word, where the struck object appears. Neither can give the
+      layer-3 answer away, and the content validator rejects any rung whose options duplicate it.
+    </p>
+
+    <div class="example">
+      <div class="step">
+        <div class="tag">LAYER 1</div>
+        <div class="body">
+          <p class="q zh">先看這一句裡的「之」。它前面緊接著的「擊」，是一個動作還是一個東西？</p>
+          <ul class="opts">
+            <li class="key zh">一個動作（敲、打）</li>
+            <li class="zh">一個東西（器物）</li>
+            <li class="zh">一個形容的詞</li>
+          </ul>
+          <p class="ask">and: why did you pick that? — getting it wrong is fine</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="tag">LAYER 2</div>
+        <div class="body">
+          <p class="q zh">「擊」是一個動作。那麼「被敲的東西」在這句話裡出現在哪裡？</p>
+          <ul class="opts">
+            <li class="zh">在「擊」的前面</li>
+            <li class="key zh">在「擊」的後面</li>
+            <li class="zh">這句話裡沒有寫出來</li>
+          </ul>
+        </div>
+      </div>
+      <div class="step">
+        <div class="tag">LAYER 3</div>
+        <div class="body">
+          <p class="q zh">「擊之」的「之」在這句話裡的作用比較像哪一個？</p>
+          <ul class="opts">
+            <li class="zh">的</li>
+            <li class="key zh">指某個東西</li>
+            <li class="zh">往、去</li>
+          </ul>
+        </div>
+      </div>
+      <div class="step">
+        <div class="tag win">EXPLAIN</div>
+        <div class="body">
+          <p class="q zh">「之」是代詞，指珊瑚樹，接在動作「擊」後面，是被敲的對象。</p>
+          <p class="ask">a wrong layer-3 pick adds one line saying why that option fails</p>
+        </div>
+      </div>
+    </div>
+    <p class="note" style="border-left-color: var(--muted)">
+      All four target sentences are still marked <code>draft: true</code>. They are written, not signed off.
+    </p>
+  </section>
+
+  <section>
+    <h2>What separates the three arms</h2>
+    <p>
+      The ladder is the whole manipulation. Strip it out and you have the direct arm; strip out the
+      response as well and you have the control arm. Everything else — the passage, the annotations,
+      the reading column width — is held constant.
+    </p>
+
+    <figure>
+      <div class="scroll">
+        <svg viewBox="0 0 880 246" role="img"
+             aria-label="Three arms compared. The questioning arm goes from highlight through three rungs to the explanation. The direct arm goes from highlight straight to the same explanation. The control arm records the highlight and shows nothing.">
+          <defs>
+            <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--lane)"></path>
+            </marker>
+            <marker id="ar2g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--goal)"></path>
+            </marker>
+          </defs>
+
+          <!-- questioning -->
+          <text class="t t-strong" x="16" y="34">Questioning</text>
+          <rect class="b-fill" x="150" y="16" width="110" height="34" rx="4"></rect>
+          <rect class="b-line" x="150" y="16" width="110" height="34" rx="4"></rect>
+          <text class="t-sm" x="205" y="37" text-anchor="middle">highlight</text>
+          <path class="b-lane" d="M 260 33 H 306" marker-end="url(#ar2)"></path>
+          <rect class="b-fill" x="312" y="16" width="250" height="34" rx="4"></rect>
+          <rect class="b-lane" x="312" y="16" width="250" height="34" rx="4"></rect>
+          <text class="t" x="437" y="37" text-anchor="middle">3 rungs · choice + reason each</text>
+          <path class="b-goal" d="M 562 33 H 608" marker-end="url(#ar2g)"></path>
+          <rect class="b-fill" x="614" y="16" width="150" height="34" rx="4"></rect>
+          <rect class="b-goal" x="614" y="16" width="150" height="34" rx="4"></rect>
+          <text class="t" x="689" y="37" text-anchor="middle">explanation</text>
+
+          <line class="b-line" x1="16" y1="76" x2="864" y2="76"></line>
+
+          <!-- direct -->
+          <text class="t t-strong" x="16" y="120">Direct</text>
+          <rect class="b-fill" x="150" y="102" width="110" height="34" rx="4"></rect>
+          <rect class="b-line" x="150" y="102" width="110" height="34" rx="4"></rect>
+          <text class="t-sm" x="205" y="123" text-anchor="middle">highlight</text>
+          <path class="b-goal" d="M 260 119 H 608" marker-end="url(#ar2g)"></path>
+          <text class="t-sm" x="434" y="111" text-anchor="middle">nothing in between</text>
+          <rect class="b-fill" x="614" y="102" width="150" height="34" rx="4"></rect>
+          <rect class="b-goal" x="614" y="102" width="150" height="34" rx="4"></rect>
+          <text class="t" x="689" y="123" text-anchor="middle">explanation</text>
+
+          <line class="b-line" x1="16" y1="162" x2="864" y2="162"></line>
+
+          <!-- control -->
+          <text class="t t-strong" x="16" y="206">Control</text>
+          <rect class="b-fill" x="150" y="188" width="110" height="34" rx="4"></rect>
+          <rect class="b-line" x="150" y="188" width="110" height="34" rx="4"></rect>
+          <text class="t-sm" x="205" y="209" text-anchor="middle">highlight</text>
+          <path class="b-line" d="M 260 205 H 400" stroke-dasharray="4 4"></path>
+          <text class="t-sm" x="420" y="209" text-anchor="start">recorded, nothing shown · no sidebar · no shaded sentences</text>
+        </svg>
+      </div>
+      <figcaption>
+        The explanation text on the right of rows one and two is the same string in both arms.
+        That parity is what makes the questioning-versus-direct comparison mean anything.
+      </figcaption>
+    </figure>
+
+    <table>
+      <thead>
+        <tr><th>&nbsp;</th><th>Shaded sentences</th><th>Conversation sidebar</th><th>Gate to continue</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Questioning</strong></td><td>yes, four</td><td>yes</td><td>all four asked once</td></tr>
+        <tr><td><strong>Direct</strong></td><td>yes, four</td><td>yes</td><td>all four asked once</td></tr>
+        <tr><td><strong>Control</strong></td><td class="no">none — the server does not send the list</td><td class="no">none</td><td>180 seconds on the passage</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Invariants worth defending</h2>
+    <ol class="rules">
+      <li>
+        <span class="n">01</span>
+        <span>
+          <strong>The model never decides when the explanation appears.</strong>
+          <span class="body">A server-side state machine does — <code>src/lib/ladder.ts</code>. The model
+          only writes the text for the rung the machine is already on, so “the explanation came too early”
+          is impossible by construction rather than by prompt discipline.</span>
+        </span>
+      </li>
+      <li>
+        <span class="n">02</span>
+        <span>
+          <strong>A correct pick alone never opens the explanation.</strong>
+          <span class="body">The reason must pass too, or a one-in-three guess would skip the ladder.</span>
+        </span>
+      </li>
+      <li>
+        <span class="n">03</span>
+        <span>
+          <strong>Both AI arms receive the identical explanation.</strong>
+          <span class="body">Not paraphrased, not regenerated — the same stored string. The questioning
+          arm reaching it later is the manipulation; reaching something different would be a confound.</span>
+        </span>
+      </li>
+      <li>
+        <span class="n">04</span>
+        <span>
+          <strong>Rungs 1 and 2 ask about observations, never meaning.</strong>
+          <span class="body">The content validator fails the build if a rung's options duplicate the
+          layer-3 answer options.</span>
+        </span>
+      </li>
+      <li>
+        <span class="n">05</span>
+        <span>
+          <strong>Where the reader stopped is the record, not just whether they were right.</strong>
+          <span class="body"><code>endPosition</code> is one of <code>layer1_correct</code>,
+          <code>layer2_correct</code>, <code>choice_correct</code>, <code>choice_wrong</code> — how far
+          down the ladder each sentence had to go.</span>
+        </span>
+      </li>
+      <li>
+        <span class="n">06</span>
+        <span>
+          <strong>Nobody can be trapped.</strong>
+          <span class="body">Two reason rejections per rung, then forced through and flagged. A stuck
+          reader is a dropout, and a pilot of fifteen per arm cannot afford one.</span>
+        </span>
+      </li>
+    </ol>
+  </section>
+
+  <footer>
+    Pilot platform <code>wenyan-pilot</code> · stage S2, learning passage
+    <span class="zh">《世說新語·汰侈》</span>. Diagram reflects the ladder as implemented in
+    <code>src/lib/ladder.ts</code> and <code>src/lib/engine.ts</code>; all four target sentences
+    remain <code>draft: true</code> pending supervisor sign-off.
+  </footer>
+
+</div>

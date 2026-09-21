@@ -4,22 +4,24 @@
 
 對應設計文件：`claude/實驗設計-Pilot版-十五項決定.md`（v5.2）、`claude/設計與材料-修訂建議v5.md`（v5.1）。
 
+2026-09-21 審閱入口：先讀 [三組提示詞與程式審閱指南](docs/程式與提示詞審閱指南.md)，再讀 [介面測試指南](docs/介面測試指南.md) 與 [Supabase 後端部署與驗證](docs/後端部署與驗證.md)。上述外部設計文件未全部包含於本工作目錄；本 README 的歷史紀錄不應取代現行程式或最新驗證紀錄。
+
 ---
 
 ## 0. 先讀這一節：哪些東西我驗證過，哪些沒有
 
 | 項目 | 狀態 |
 |---|---|
-| 純邏輯（階梯、理由把關、洩答偵測、分派、計分、信度）單元測試 | **已執行，37 項全過** |
+| 自動測試（含儲存契約與 SQL 結構） | **113 項通過**；完整證據範圍見部署文件 |
 | 三臂完整流程（9 位假受試者）離線模擬 | **已執行，通過** |
 | 內容檢查器會擋住佔位題目 | **已執行，如預期以 exit code 1 失敗** |
-| `npm install` / `npm run build` / `npm run typecheck` | **未執行。** 我的沙箱無法連到 npm registry（403）。你要在本機跑一次 |
-| 瀏覽器互動（選取文字、計時器、UI） | **未執行**。第 5 節有手動檢查清單 |
+| 套件安裝 / `npm run build` / `npm run typecheck` | **已執行通過**；部署追蹤包含驅動，已移除本機私密資料參照 |
+| 瀏覽器互動（選取文字、計時器、UI） | S2 已開啟檢視並修正提交 403；全螢幕切換阻礙完整操作，**未完成全部手動檢查** |
 | LLM 供應商請求格式（Anthropic 與 Gemini）契約測試 | **已執行，6 項通過**（用假的 fetch 驗證送出的 URL、標頭、body 與回應解析） |
 | 真實 API 呼叫（Anthropic / Gemini） | **未執行**。程式用 `fetch` 直打官方端點，請自行以一次真實呼叫確認 |
-| Supabase 介面 | **未實作**。已測的儲存層是檔案式 `JsonStore`；`supabase/schema.sql` 只是給你日後搬家用 |
+| Supabase 後端 | 已實作 `PostgresStore`、交易、`db/schema.sql` 及遷移／匯出工具；PGlite 契約測試通過，**真實 Supabase 尚未連線驗證** |
 
-我沒有裝任何外部套件，程式只依賴 Next.js / React 與 Node 內建模組。
+新增 `pg` 資料庫驅動與 PGlite 測試環境。教材仍未簽核；工程測試通過不代表可正式收案。自由選取第三層、理由退回次數及指標分母問題列於審閱指南。
 
 ---
 
@@ -30,15 +32,15 @@
 ```
 LLM_PROVIDER=gemini            # mock | anthropic | gemini
 GEMINI_API_KEY=你的金鑰
-LLM_MODEL=gemini-2.5-flash     # 這個字串要寫進論文方法章
+LLM_MODEL=已在供應商帳號確認的模型版本     # 寫進論文方法章，整批固定
 LLM_TEMPERATURE=0
 LLM_MAX_TOKENS=300
 ```
 
-- 換成 Claude：`LLM_PROVIDER=anthropic`、填 `ANTHROPIC_API_KEY`、`LLM_MODEL=claude-3-5-haiku-20241022`
+- 換成 Claude：`LLM_PROVIDER=anthropic`、填 `ANTHROPIC_API_KEY`，另確認並固定可用的模型版本
 - 離線開發：`LLM_PROVIDER=mock`（不需要金鑰）
 - **不要用 `gemini-2.0-flash`**：官方已列為停用（最早 2026-06-01 關閉），見 https://ai.google.dev/gemini-api/docs/deprecations
-- 可用的穩定版：`gemini-2.5-flash`、`gemini-3.5-flash-lite`、`gemini-3.6-flash`（見 https://ai.google.dev/gemini-api/docs/models）
+- 模型可用性以帳號及[官方清單](https://ai.google.dev/gemini-api/docs/models)確認，不把 README 的舊型號當成持續有效的保證
 - 不要用 preview 版本：收案期間可能改變或消失
 
 程式位置：`src/lib/llm.ts` 的 `GeminiProvider`、`AnthropicProvider`、`getProvider()`；
@@ -61,8 +63,8 @@ body 含 `systemInstruction`、`contents`、`generationConfig`，回應取 `cand
 |---|---|---|
 | 1 | `src/lib/types.ts` | 所有名詞的定義：一位受試者、一道題目、一句目標句、一筆互動紀錄各有哪些欄位。**這份看懂，其他都好懂。** |
 | 2 | `src/lib/config.ts` | 所有數字：階段時限、字數上限、退回次數上限、模型設定、判準門檻。改實驗參數只改這裡。 |
-| 3 | `src/content/passages.ts` | 三篇原文、註解、四句目標句。**你要填的檔案之一。** |
-| 4 | `src/content/items.ts` | 40 道題。**你要填的另一個檔案。** |
+| 3 | `src/content/passages.ts` | 四篇原文、註解、四句目標句；已撰寫，待人工校勘簽核。 |
+| 4 | `src/content/items.ts` | 40 道題；已撰寫，待人工簽核。 |
 
 ### 第二步：核心規則怎麼實作（15 分鐘）
 
@@ -93,7 +95,7 @@ body 含 `systemInstruction`、`contents`、`generationConfig`，回應取 `cand
       ├─ 依組別分三條路：
       │    對照組 → 只記錄，直接完成
       │    直答組 → 取出事先寫好的解釋（src/content/passages.ts）
-      │    提問組 → 第 1 層問題
+      │    提問組 → 非目標多字自由選取先確認想問的字詞，再進第 1 層問題
       └─ 寫入互動紀錄       → src/lib/store.ts
       ↓
 瀏覽器：顯示 AI 的話
@@ -206,7 +208,7 @@ node scripts/verify-offline.mjs
 
 需要 Node ≥ 22.6（用內建的 TypeScript type stripping）。這支程式會把 `src/`、`tests/`、兩支 script 複製到 `.verify/`，改寫 import，再用同一份測試檔跑一次。**它不做型別檢查**，型別請用 `npm run typecheck`。
 
-我在 Node v22.22.2 上執行的實際輸出：
+早期版本在 Node v22.22.2 的歷史輸出（不是本次測試數量；最新結果見部署文件）：
 
 ```
 engine.test.ts: 9 passed, 0 failed
@@ -234,22 +236,40 @@ OFFLINE VERIFICATION: OK
 | # | 設計規則 | 程式位置 | 自動驗證 |
 |---|---|---|---|
 | 1 | AI 不主動介入，只在讀者 highlight 後回應 | `src/app/api/assist/route.ts`（只有 `highlight` 才會開啟互動） | `engine.test.ts` 全部流程都由 `startAssist` 起頭 |
-| 2 | highlight 粒度：4 字以內＝字詞、跨句＝整段 | `src/lib/highlight.ts` | `unit.test.ts > highlight granularity` |
-| 3 | 下限＝四句目標句各完成一次 | `src/lib/highlight.ts: lowerBoundMet`、`src/app/api/advance/route.ts` | `unit.test.ts`、`engine.test.ts > 需要四句` |
+| 2 | highlight 粒度**完全自由**：讀者選什麼就存什麼（任意長度）；`classifyGranularity` 產出的 `word`／`sentence`／`passage` 只是 log 用的分類標籤，不再重寫選取 | `src/lib/highlight.ts: classifyGranularity`；`engine.ts: startAssist` 逐字存入 `active.selection` | `unit.test.ts > sentenceRanges + neighborhoodOf`、`engine.test.ts > selection is stored verbatim` |
+| 3 | **三組都沒有使用下限**：用多用少是觀察對象，不是要求 | `src/lib/config.ts: lowerBoundArms`（空陣列）、`highlight.ts: lowerBoundApplies` | `unit.test.ts > gates no arm` |
+| 3b | 四句目標句仍然**逐句記錄**，作為使用量指標與 S5 的共變項 | `engine.ts: completeInteraction`、`api/admin/summary` 的 `usageByArm` | `engine.test.ts > records each target sentence exactly once` |
+| 3c | 唯一的門檻是**停留時間**，三組相同 | `CONFIG.minReadingSeconds`、`api/advance/route.ts` | 讀該檔 |
+| 3d | 「完全沒用過」要被記下來，但**不得當成排除** | `advance/route.ts` 的 `no_assist_used`、`CONFIG.exclusion.descriptiveOnly` | 讀該檔；summary 的 `excluded` 不含描述性旗標 |
 | 4 | 提問組：解釋只在「嘗試過且給過理由」之後出現 | `src/lib/ladder.ts`（伺服器端狀態機，模型無權決定） | `unit.test.ts > socratic ladder`、`smoke-run.ts` 逐一互動檢查 |
+| 4b | 目標句每一層都是選擇題＋必填理由；**選對但沒理由不算過** | `src/lib/ladder.ts` 的 `layer_choice`、`src/lib/engine.ts: socraticStep`／`choiceForStep` | `unit.test.ts > ladder: multiple choice + reason`、`engine.test.ts > does not open the explanation on a lucky pick` |
+| 4c | 層一層二只問「觀察」，不問意思，不得預告層三答案 | `src/content/passages.ts` 的 `layer1Choice`／`layer2Choice` | `validate:content` 擋下與層三選項相同的層別 |
+| 4d | **Task A**：自由 highlight 的層一／層二也是選擇題，選項由模型生成後**逐項洩答檢查＋結構檢查**；失敗重試一次後退到固定的觀察選項題（`degraded=true`），退化題**不得**讓階梯提前結束 | `src/lib/engine.ts: socraticChoice`、`src/lib/leak.ts: checkSocraticOptions`／`validateChoiceStructure`、`src/lib/prompts.ts: FALLBACK_SOCRATIC_MCQ` | `engine.test.ts > Task-A degraded fallback for free-highlight MCQ`；`unit.test.ts > Task-A leak-check on generated options` |
+| 4e | **Task A 稽核**：生成的選項與 `answerIndex` 一律寫入互動列 (`generatedOptions`／`generatedAnswerIndex`／`degraded`)；N=45 事後 100% 人工複審 | `src/lib/types.ts: InteractionRow`（Task-A 欄位）、`src/lib/engine.ts: socraticStep` 的 `log(...)` | 讀該檔；`admin/export` 因 CSV 是動態欄位，會自動帶出新欄位 |
+| 4f | 非目標多字反白由讀者先確認焦點；候選必須出自原反白，人名等專名後排，並保留「其他」 | `src/lib/focus.ts`、`engine.ts: focusCandidates`、`run/page.tsx` 的 focus composer | `engine.test.ts > asks the reader to choose a focus`、`unit.test.ts > focus-option validation` |
 | 5 | 理由把關看「有沒有理由」，不看對錯 | `src/lib/reasonGate.ts` | `unit.test.ts > reason gate rules` |
-| 6 | 最多退回 2 次，第 3 次強制接受並標記 | `src/lib/reasonGate.ts: shouldForceAccept`、`ladder.ts` | `unit.test.ts > rejects at most twice` |
+| 6 | **待定案衝突**：註解寫第 3 次，但實作在第 2 次不合格時強制接受 | `src/lib/reasonGate.ts: shouldForceAccept`、`ladder.ts` | 現有測試固定實作；詳見審閱指南 §4.2 |
 | 7 | 目標句的解釋兩臂逐字相同 | `src/lib/engine.ts: explanationFor`（目標句一律用 content 裡的文字） | `engine.test.ts > gives the direct arm the SAME explanation` |
-| 8 | 提問組不得洩答（含「加了問號的答案」） | `src/lib/leak.ts` + `engine.ts` 的重生成與降級 | `unit.test.ts > leak detection`、`engine.test.ts > never lets a leaking output reach the reader` |
+| 8 | 提問組不得洩答（含「加了問號的答案」），不得使用只抄相鄰字的低價值題；Task A 起也**檢查每一個生成選項** | `src/lib/leak.ts: checkSocraticOutput`／`checkSocraticOptions` + `engine.ts` 的重生成與降級 | `unit.test.ts > leak detection`、`unit.test.ts > Task-A leak-check on generated options`、`engine.test.ts > never lets a leaking question stem reach the reader` |
 | 9 | 直答組不得一次給整篇譯文 | `src/lib/leak.ts: checkDirectOutput` | `unit.test.ts > flags a whole-passage translation` |
-| 10 | 對照組 highlight 只記錄、不回應，但一樣計入下限 | `src/lib/engine.ts: startAssist` | `engine.test.ts > records the control arm mark` |
-| 11 | 兩臂共用同一模型與參數 | `src/lib/config.ts: CONFIG.llm`（唯一來源） | 讀一次 `config.ts` 即可確認；`prompts.ts` 只改 system prompt |
+| 10 | 對照組 highlight 只記錄、不回應；沒有側欄；三組都不看到底色 | `src/lib/config.ts: targetHintArms`（空陣列）、`src/lib/view.ts`（targets 給空陣列）、`view.ts: assist.sidebar` | `unit.test.ts > shades the target sentences for nobody` |
+| 11 | 兩臂共用同一模型與參數 | `src/lib/config.ts: CONFIG.llm`（唯一來源） | system/user prompt 及呼叫次數不同；不能稱為只有 system prompt 不同 |
 | 12 | 分派在伺服器端、依前測分層、三臂平衡 | `src/lib/randomize.ts`、`src/app/api/quiz/route.ts` | `unit.test.ts > randomisation`；smoke 產出 3/3/3 |
 | 13 | 計分只在伺服器端，前端拿不到答案 | `src/lib/view.ts: publicItem`（唯一輸出給前端的形狀） | 搜尋 `answerIndex` 只會出現在 server 檔案 |
 | 14 | 遷移篇沒有註解、沒有查檢題 | `src/content/passages.ts`（T1 annotations 為空）、`validate-content.ts` | `npm run validate:content` |
 | 15 | 逾時不刪人，只標記（ITT） | `src/app/api/advance/route.ts` | 讀該檔；`excludeFlags` 只加標記，不刪資料 |
 | 16 | 分頁切換超過 3 次標記 | `src/app/api/event/route.ts` | 同上 |
+| 16b | 作答階段全螢幕、離開會被記錄（**只嚇阻與記錄，不是強制**） | `src/lib/config.ts: proctor`、`run/page.tsx: useProctor`／`FullscreenGate` | 讀該檔；`visibility_change` 與 `fullscreen_exit` 共用同一個排除門檻 |
 | 17 | 延遲測驗只能用專屬連結，且不寄信 | `src/app/api/state/route.ts`（主 token 在 S6 只給連結） | 讀該檔 |
+| 18 | 只有正文可以 highlight | CSS：`src/app/globals.css` 的 `.passage-body`；**保證**：`src/lib/engine.ts: startAssist` 檢查選取字串是否為正文子字串 | `engine.test.ts > only the passage body can be highlighted` |
+| 19 | 一次只能開一個互動（鎖定），換句要手動解鎖 | 伺服器：`src/app/api/assist/route.ts` 對進行中的互動回 409；前端：`run/page.tsx` 的 `LockState` | 讀該檔；`assist/route.ts` 的守衛在 `startAssist` 之前 |
+| 20 | 重新整理不能把讀者鎖死 | `src/lib/engine.ts: pendingTurnFor` + `src/app/api/state/route.ts` | `engine.test.ts > reload recovery` |
+| 21 | 側欄對話紀錄不得洩漏 `inTargetSentence`／`strategy`／`rawResponse` | `src/app/api/transcript/route.ts`（明列送出欄位） | 讀該檔的欄位白名單 |
+| 22 | **同一階段的題目不得互相洩答** | `scripts/validate-content.ts` 的 cross-item leakage 檢查 | `validate:content`；把舊的洩漏改回去會立刻報錯（已實測） |
+| 23 | 受試者看到的篇名不得帶內部編號或篇章名 | `Passage.displayTitle`（`title` 只給研究者，不送前端） | `validate:content` 擋下含數字／＋／等於內部標題的 displayTitle |
+| 24 | 延遲測驗只開一天：前一天做完，隔天開放，再隔一天關閉 | `CONFIG.delayedTest = { minHours: 24, maxHours: 48 }`、`api/state/route.ts` 兩端都擋 | 讀該檔 |
+| 25 | 選取超過一個字時不得說「這個字」；選取單獨無法理解時**必須引述鄰句**（Task B） | `src/lib/prompts.ts: socraticSystemPrompt`（絕對禁令＋鄰句規則）、`socraticTurnPrompt` 帶入 offset 與前後句 (`neighborhoodOf`)；`fallbackQuestion`／`LOCALISE_QUESTION` 只在降級路徑保留 | `unit.test.ts > Task-B: socratic prompts carry offset + neighbourhood`、`unit.test.ts > system prompt forbids saying 「這個字」` |
+| 26 | 沒接模型時的 mock 必須長得像真的 | `src/lib/llm.ts: getProvider` 依 system prompt 分支；解釋文字自稱「示範模式」 | 讀該檔；不接 key 跑 `npm run dev` 時直答組應出現解釋而非問題 |
 
 手動檢查建議（5 分鐘）：
 
@@ -266,13 +286,15 @@ grep -rn "CONFIG.llm" src/                                                  # �
 
 | 設計 | 依據 |
 |---|---|
-| 固定的通用提問句幹（策略 A–D），逐字重複 | Rosenshine, Meister & Chapman (1996), *RER* 66(2), 181–221：通用句幹 ES = 1.12 |
+| 通用提問策略（A–D 為本專案改寫，不是論文逐字引文） | Rosenshine et al. (1996) 研究學生生成問題；不能將效果量直接套在 AI 提問介面 |
 | 提問處理「澄清」而非論辯 | Palincsar & Brown (1984), *Cognition and Instruction* 1(2), 117–175 |
 | 階梯最後一定給答案 | Aleven, Roll, McLaren & Koedinger (2016), *IJAIED* 26(1), 205–223（bottom-out hint；並建議加上自我解釋） |
 | 先嘗試再給答案 | Kornell, Hays & Bjork (2009), *JEP:LMC*；Sinha & Kapur (2021), *RER* 91(5)：g = 0.36 |
 | 必須寫理由才看到解釋 | Bisra, Liu, Nesbit, Salimi & Winne (2018), *Educational Psychology Review*：g = .55 |
 | 直答臂是有護欄的解說者 | Bastani et al. (2025), *PNAS*：無護欄 GPT 使後測低 17%，有護欄則無顯著差異 |
-| 不教語法術語 | 劉潔玲、谷屹欣（2017）：「僅僅知道一些專有名詞並未能幫助他們理解文言文的字義」 |
+| 不教指定語法術語 | 本專案操弄選擇；劉潔玲、谷屹欣（2017）是閱讀困難背景，不是禁止術語的實驗證據；舊未核實引文已移除 |
+
+各篇完整題名、可取得的原文、支持範圍與不能推出的主張，見 [審閱指南 §7](docs/程式與提示詞審閱指南.md#7-文獻支持到哪一層不能推出什麼)。不是每篇全文都已取得。
 
 連結：
 - https://www.formapex.com/telechargementpublic/rosenshine1996a.pdf
@@ -285,20 +307,145 @@ grep -rn "CONFIG.llm" src/                                                  # �
 
 ---
 
-## 5. 手動瀏覽器檢查清單（我沒跑過，你要跑）
+## 4.5 S2 閱讀畫面：版面與互動
+
+```
+┌──────────── 1064px ────────────┐
+│ ┌── 680 ──────┐  ┌── 360 ────┐ │
+│ │ 計時器       │  │ 對話紀錄   │ │
+│ │ 說明        │  │  （整段 S2  │ │
+│ │ 正文（可選取）│  │   連續顯示） │ │
+│ │ 註解        │  │            │ │
+│ │ 下一階段     │  │ ─────────  │ │
+│ │             │  │ 輸入／選項／ │ │
+│ │             │  │ 解鎖按鈕    │ │
+│ └─────────────┘  └───────────┘ │
+└────────────────────────────────┘
+螢幕 < 1100px 時側欄改排到正文下方。
+```
+
+**四條互動規則**
+
+1. **只有正文可選取。** 說明、註解、側欄都是 `user-select: none`。這只是方便；
+   真正的保證在伺服器：`startAssist` 會拒絕不是正文子字串的選取字串。
+2. **一次一句（鎖定）。** 標記之後正文變淡、不能再選，直到這一句結束。
+   伺服器對進行中的互動回 409，所以繞過前端也沒用。
+3. **解鎖是手動的。** 對話結束後正文仍鎖著，要按「解鎖，換下一句」才能標下一處。
+   這是刻意的：換句是一個明確的動作，不會因為手滑拖到別處就把爬到一半的 ladder 丟掉。
+4. **側欄是一整條連續對話**，不是每句一條。讀者可以往上捲看之前問過的句子與答案。
+
+**提問組的階梯（目標句）**
+
+```
+層一  選擇題（觀察題）＋必填理由
+        選對＋理由過 ─────────────► 解釋
+        選錯＋理由過 ─► 層二
+        理由不過（最多 2 次）─► 留在層一，再問一次
+層二  選擇題（觀察題）＋必填理由      同上規則
+層三  選擇題（答案題）＋必填理由 ─► 解釋（不論對錯）
+解釋  按「看完了」 ─► 這一句結束，正文解鎖
+```
+
+層一層二只問**觀察**（那個字前後是什麼詞、那段話在做什麼），不問意思，所以不會預告層三的答案。
+`validate:content` 會擋下與層三選項相同的層別。
+
+**為什麼選對還要寫理由**：三個選項猜中率 1/3。如果選對就直接看到解釋，等於三分之一的受試者
+一鍵跳過整個階梯，對他們而言提問操弄根本沒有發生。理由把關（`reasonGate.ts`）是擋這件事的唯一機制。
+
+**自由標記（非目標句）** 的第一、二層使用模型生成三選項＋理由；經結構與洩答檢查，失败再生成一次，仍失敗則回退固定觀察題。生成答案的語義仍需人工稽核。第三層目前仍是通用選項，屬收案前必須處理的設計限制。
+
+**三臂的版面差異**
+
+| | 底色四句 | 側欄 | 使用下限 | 進入下一階段的門檻 | 鎖定 |
+|---|---|---|---|---|---|
+| 提問組 | **沒有** | 有 | **沒有** | 停留 180 秒 | 有 |
+| 直答組 | **沒有** | 有 | **沒有** | 停留 180 秒 | 有 |
+| 對照組 | **沒有**（伺服器連 targets 清單都不給） | **沒有** | **沒有** | 停留 180 秒 | 有 |
+
+**三組都沒有使用下限。** 用多用少是這個先導研究要觀察的東西之一——「學生會不會自願使用一個一直反問的 AI，還是乾脆放棄自己讀」本身就是結果。強迫一個最低使用量，等於讓這個問題在設計上無法回答。
+
+代價（要寫進限制）：
+
+1. **提問組 vs 直答組失去曝光量對等。** 一組平均問五句、另一組問兩句時，S5 的差異就混了「被提問而非被告知」與「用得比較多」。使用量必須進入分析當共變項或中介變項，不能再假設相等。
+2. **完全沒用的人是「治療組裡的未治療者」。** ITT 仍然把他們算進去（那正是 ITT 的意思），但每組 15 人時，幾個沒用的人就會明顯稀釋效果。
+3. `lowerBoundMetRate` **換了意思**：原本是「規定有沒有被遵守」的可行性檢核，現在是「有多少人自己選擇用完四句」。儀表板上改名為 `usedAllFourRate`，門檻值留著只當參考線，不再是及格線。
+
+`/api/admin/summary` 新增 `usageByArm`：每組的平均標記次數、平均用掉幾句目標句、完全沒用的比率、用滿四句的比率。這四個數字就是上面那個共變項的描述統計。
+
+`no_assist_used` 旗標記錄「一次都沒用」，但列在 `CONFIG.exclusion.descriptiveOnly` 裡，**不會**被算成排除——把「選擇不用」當成廢卷會悄悄毀掉 ITT。
+
+正文欄在三臂一律 680px，所以行長一致——對照組雖然沒有側欄，閱讀難度不會因為行變長而不同。
+
+---
+
+## 4.8 作答期間的「防離開」：能做到什麼、做不到什麼
+
+**做得到**
+
+| 手段 | 程式位置 | 效果 |
+|---|---|---|
+| 作答階段要求全螢幕 | `FullscreenGate` | 開始前要按一次按鈕（瀏覽器只在使用者手勢下給全螢幕） |
+| 離開全螢幕時擋一層並要求回來 | 同上 | 記 `fullscreen_exit`，畫面蓋上提示，計時器不停 |
+| 切換視窗記錄 | `useProctor` | 記 `window_blur`，補 `visibilitychange` 在部分平台漏掉的情況 |
+| 關閉或離開頁面時瀏覽器詢問 | `beforeunload` | 顯示瀏覽器自己的「離開網站？」，文字無法自訂 |
+| 超過門檻標記排除 | `api/event/route.ts` | `visibility_change` ＋ `fullscreen_exit` 合計超過 `maxVisibilityChanges` 就加 `tab_switching` 旗標 |
+
+**做不到（不要在論文裡寫成做得到）**
+
+- 擋不住 Alt-Tab、第二個螢幕、旁邊放一支手機、直接闔上筆電。
+- 擋不住 Esc 離開全螢幕。任何瀏覽器 API 都沒有這個權限，只能事後知道。
+- 擋不住截圖、拍照、或請別人代答。
+- `beforeunload` 只是一個確認框，按一下就能離開，而且**本來就該如此**。
+
+**為什麼不做更硬的封鎖**
+
+同意書寫著「你可以隨時關閉頁面退出，不會有任何影響」。真的把出口堵死會和這句話衝突。
+所以這裡的做法是：讓離開變成一個需要刻意做的動作，而且一定留下紀錄；
+真正保護分析的是排除旗標與 `events` 表，不是封鎖。
+
+`window_blur` 刻意**不計入**排除門檻——點一下網址列或跳出一個通知都會觸發，
+拿來當排除標準會把幾乎所有人都排掉。它只記錄下來供你檢視。
+
+---
+
+## 4.9 題目互相洩答的檢查
+
+同一階段的題目是**一次全部呈現**的，所以 A 題的題幹或選項如果寫出 B 題的答案，B 題就變成送分題。
+
+手動讀過一遍，加上一支掃描程式，找出並修掉這些：
+
+| 洩漏 | 情況 | 處理 |
+|---|---|---|
+| S5-05 → S5-08 | S5-05 考「駛」＝**跑得快**，S5-08 的題幹開頭就寫「石崇的牛**跑得快**」 | 改題幹為「真正的差別在哪裡」 |
+| S5-04 → S5-06 | S5-04 考「豫」＝**事先**，S5-06 的正解寫「**事先**把豆子做成熟末」 | 正解改為「把豆子做成熟末備用」 |
+| S5-09 → S5-12 | S5-09 的正解就是「用二十頭肥牛來換」，S5-12 要推的正是這個交換的用意 | S5-09 改問「牛最初怎麼到王太尉手上」 |
+| S3-08 → S3-09 | S3-08 的正解（石崇拿出更多更好的珊瑚樹）直接給出舊 S3-09 的推論 | S3-09 改問石崇「不足恨，今還卿」的態度 |
+| S1-05 ↔ S1-06 | 兩題的正解都寫「換上新衣」 | S1-06 改問態度差別，不再重複換衣機制 |
+| 官方 Q30 → 自編 S6-08/09/10 | 官方第 30 題選項 B 寫出「姑父蕭子雲…書法」、選項 D 寫出「不以官位**誇耀**於人，反而愈加**謙虛**」，一次洩漏三題 | 官方題不能動，三題自編題全部改到官方碰不到的段落（襲爵、起家官職、家世三句） |
+
+**自動檢查**：`validate:content` 現在會擋下「A 題的正解原文（三個中文字以上）出現在同階段 B 題的題幹或選項裡」。規則刻意寫窄——同一篇文章的題目必然共用專名（珊瑚樹、王褒、王僧辯），那不是洩答。語意層次的洩漏（換句話說、理解題答案蘊含推論題答案）仍然要靠人讀，這條只保證機械式的不會再回來。
+
+這條規則已經實測過會觸發：把 S5-08 的題幹改回舊版，`validate:content` 立刻報
+`item S5-05's answer 「跑得快」 is repeated in S5-08`。
+
+---
+
+## 5. 手動瀏覽器檢查清單
 
 1. `npm run dev`，開 `http://localhost:3000`，填同意書 → 應轉到 `/run?t=...`
 2. S1 作答 → 交卷後看 `data/db.json`：該participant 應該有 `arm`、`stratum`、`pretestScore`
 3. S2：
    - 用滑鼠選一個字 → 提問組應出現問題、直答組應出現解釋、對照組沒有回應
-   - 提問組連答兩次「不知道」→ 第三步應出現選擇題與理由欄
+   - 提問組第一層就有選項與理由欄；檢查選錯但有理由時下降一層
    - 理由寫「猜的」→ 應被退回，訊息為「請說說你為什麼選這個…」
    - 理由寫「因為前面是擊」→ 應出現解釋與「看完了」
-   - 四句目標句都做完前，「進入下一階段」應該是停用的
+   - 不使用協助也能在 180 秒後繼續；不設四句完成下限
 4. 切換分頁 4 次 → `data/db.json` 中該人應出現 `tab_switching` 標記
 5. 嘗試複製文章文字 → 應該複製不到
 6. 走到最後 → 應顯示延遲測驗連結與最早可作答日期
-7. `http://localhost:3000/api/admin/summary?key=<ADMIN_PASSWORD>` → 應回傳進入正式實驗的判準數字
+7. 管理者以 `Authorization: Bearer <ADMIN_PASSWORD>` 讀取 `/api/admin/summary`；正式環境不接受網址密碼
+
+可用 `npm run demo:seed` 建立三組本機假資料連結；完整步驟及未驗證項目見 [介面測試指南](docs/介面測試指南.md)。
 
 ---
 
@@ -307,18 +454,20 @@ grep -rn "CONFIG.llm" src/                                                  # �
 五張表：`participants`、`responses`、`interactions`、`events`、`scales`。
 
 ```
-GET /api/admin/export?key=<ADMIN_PASSWORD>&table=responses     # CSV
-GET /api/admin/summary?key=<ADMIN_PASSWORD>                    # 判準儀表板 + S5 題目分析
+Authorization: Bearer <ADMIN_PASSWORD>
+GET /api/admin/export?table=responses     # CSV
+GET /api/admin/summary                    # 營運摘要，正式分析另核對分母
 ```
 
-`interactions` 保留每一則模型原始回傳（`rawResponse`）與洩答旗標（`leakFlags`），操縱檢核直接從這張表算。
+`interactions` 保留生成文字的原始回傳（`rawResponse`）與檢查旗標（`leakFlags`），理由判定另在 `events.reason_judgement`。旗標包括攔截後重新生成，不等於讀者實際看到洩答；正式操弄檢核需要人工判讀。
 `events` 的 `read_done_click` 內含每句的結束位置（第 1 層答對／第 2 層答對／選對／選錯）、退回次數、是否「理由不足」、花費毫秒。
 
 ---
 
 ## 7. 已知限制
 
-- 檔案式儲存一次只適合單一伺服器行程；45 人的 pilot 夠用，正式實驗建議換掉。
-- 非目標句的臨場選擇題目前用固定的通用選項（`engine.ts: choiceFor`），不是模型生成。理由：生成題的品質無法在執行時檢查。若要改成生成，必須先做人工檢查流程。
-- 前端計時器以客戶端時間為準；伺服器端只記錄 `elapsedSeconds`。若要防作弊需改成伺服器端計時。
+- 檔案式儲存限單程序開發；正式環境要求 Supabase/PostgreSQL，真實連線與多人負載尚待驗證。
+- 非目標句前兩層由模型生成，第三層仍為通用固定選項；第三層語義有效性是未解決研究問題。
+- 階段計時與延遲窗口已由伺服器驗證；前端 `rtMs` 仍非真正逐題反應時間。
+- 理由退回次數與規格註解衝突；教材簽核、模型語義、摘要指標及暴露量限制見審閱指南。
 - 手機版沒有特別處理，建議只開放桌機作答。

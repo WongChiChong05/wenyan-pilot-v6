@@ -1,6 +1,6 @@
--- Optional: only needed if you move off the built-in file store (JsonStore).
--- The shipped and tested storage backend is src/lib/store.ts (JsonStore).
--- A Supabase adapter is NOT included, because it could not be tested here.
+-- HISTORICAL REFERENCE ONLY. Do not apply this file for the current backend.
+-- Use npm run db:migrate with db/schema.sql and src/lib/store.postgres.ts.
+-- Existing public tables are not migrated or deleted automatically.
 
 create table participants (
   id uuid primary key,

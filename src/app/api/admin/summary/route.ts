@@ -5,6 +5,7 @@ import { leakRate } from '@/lib/leak';
 import { cronbachAlpha, itemStats } from '@/lib/scoring';
 import { getStore } from '@/lib/store';
 import type { Arm } from '@/lib/types';
+import { authorised } from '@/lib/admin';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,7 +15,7 @@ export const dynamic = 'force-dynamic';
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  if (!process.env.ADMIN_PASSWORD || url.searchParams.get('key') !== process.env.ADMIN_PASSWORD) {
+  if (!authorised(req)) {
     return NextResponse.json({ error: 'unauthorised' }, { status: 401 });
   }
   const store = getStore();
@@ -28,6 +29,46 @@ export async function GET(req: Request) {
   const finishedDelayed = participants.filter((p) => p.stage === 'DONE');
 
   const byArm = (arm: Arm) => participants.filter((p) => p.arm === arm).length;
+
+  /**
+   * VOLUNTARY USAGE.
+   *
+   * Nobody is required to use the assistant any more, so how much each arm chose to use
+   * it is a result of the pilot rather than a fixed quantity. These are the numbers the
+   * write-up needs: did the questioning arm get abandoned? did the direct arm ask for
+   * more? how many readers never asked at all?
+   *
+   * It also matters for the analysis: with usage unmatched, an S5 difference between the
+   * two AI arms mixes "questioned rather than told" with "consumed more assistance", so
+   * usage has to enter as a covariate. These are the covariate's descriptives.
+   */
+  const usageByArm = (['socratic', 'direct', 'control'] as Arm[]).map((arm) => {
+    const inArm = participants.filter((p) => p.arm === arm && p.stage !== 'S0' && p.stage !== 'S1');
+    const perReader = inArm.map((p) => {
+      const mine = interactions.filter((r) => r.participantId === p.id);
+      const ids = new Set(mine.map((r) => r.interactionId));
+      return { highlights: ids.size, targets: p.completedTargets.length };
+    });
+    const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+    return {
+      arm,
+      n: inArm.length,
+      meanHighlights: Number(mean(perReader.map((x) => x.highlights)).toFixed(2)),
+      meanTargetsUsed: Number(mean(perReader.map((x) => x.targets)).toFixed(2)),
+      neverUsedRate: inArm.length
+        ? perReader.filter((x) => x.highlights === 0).length / inArm.length
+        : 0,
+      usedAllFourRate: inArm.length
+        ? perReader.filter((x) => x.targets === 4).length / inArm.length
+        : 0,
+    };
+  });
+
+  // A descriptive flag is not an exclusion. Counting "chose not to use the assistant" as
+  // an excluded record would quietly undo intention-to-treat.
+  const reallyExcluded = participants.filter((p) =>
+    p.excludeFlags.some((f) => !CONFIG.exclusion.descriptiveOnly.includes(f))
+  ).length;
 
   const s5Items = ITEMS_BY_STAGE.S5;
   const matrix: number[][] = [];
@@ -52,8 +93,12 @@ export async function GET(req: Request) {
     n: {
       total: participants.length,
       byArm: { socratic: byArm('socratic'), direct: byArm('direct'), control: byArm('control') },
-      excluded: participants.filter((p) => p.excludeFlags.length > 0).length,
+      excluded: reallyExcluded,
+      descriptivelyFlagged: participants.filter((p) =>
+        p.excludeFlags.some((f) => CONFIG.exclusion.descriptiveOnly.includes(f))
+      ).length,
     },
+    usageByArm,
     progression: {
       completionRate: started.length ? finishedMain.length / started.length : 0,
       completionRateThreshold: CONFIG.progression.completionRate,
@@ -61,8 +106,11 @@ export async function GET(req: Request) {
       delayedReturnRateThreshold: CONFIG.progression.delayedReturnRate,
       leakRateSocratic: leakRate(socraticTurns),
       leakRateThreshold: CONFIG.progression.maxLeakRate,
-      lowerBoundMetRate: started.length ? lowerBoundMetCount / started.length : 0,
-      lowerBoundThreshold: CONFIG.progression.lowerBoundMetRate,
+      // No longer a compliance check. Nobody is required to use all four, so this is now
+      // a straight measure of how many readers chose to — keep the threshold in view as a
+      // reference line, not as a pass/fail.
+      usedAllFourRate: started.length ? lowerBoundMetCount / started.length : 0,
+      usedAllFourReference: CONFIG.progression.lowerBoundMetRate,
       reasonInsufficientRate: readDone ? reasonInsufficient / readDone : 0,
       reasonInsufficientThreshold: CONFIG.progression.maxReasonInsufficientRate,
       alphaS5: matrix.length >= 2 ? cronbachAlpha(matrix) : null,

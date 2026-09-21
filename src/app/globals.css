@@ -1,0 +1,264 @@
+/*
+ * The only stylesheet. Everything else is inline styles.
+ *
+ * It exists for the two things inline styles cannot express:
+ *   1. media queries (the S2 sidebar has to fold below the passage on narrow screens)
+ *   2. ::selection and user-select rules that must apply to descendants
+ */
+
+/* ------------------------------------------------------------------ */
+/* S2 two-column layout: passage left, conversation sidebar right.     */
+/* Target: laptops at 1280-1440. Below 1100 the sidebar folds under.   */
+/* ------------------------------------------------------------------ */
+
+.s2-grid {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.s2-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Identical in every arm, sidebar or not, so line length — and therefore
+     reading difficulty — is the same for control as for the two AI arms. */
+  max-width: 680px;
+}
+
+.s2-aside {
+  flex: 0 0 360px;
+  position: sticky;
+  top: 12px;
+  /* Full viewport height beside the passage: the transcript scrolls inside the
+     panel, so the page itself never has to scroll to reach the composer. */
+  height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+@media (max-width: 1099px) {
+  .s2-grid {
+    flex-direction: column;
+  }
+  .s2-aside {
+    flex: 1 1 auto;
+    width: 100%;
+    position: static;
+    height: 60vh;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Selection is confined to the passage body.                          */
+/*                                                                     */
+/* Everything on the S2 screen is unselectable except .passage-body.   */
+/* Without this a reader can drag across the instructions, the         */
+/* annotations or the sidebar and send that text as a "highlight".     */
+/* The server rejects such a selection too (Engine.startAssist), so    */
+/* this rule is convenience; the server check is the guarantee.        */
+/* ------------------------------------------------------------------ */
+
+.s2-grid,
+.s2-grid * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.passage-body,
+.passage-body * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* The reader types answers in the sidebar; user-select:none would block selection
+   inside form controls in several browsers. */
+.s2-grid input,
+.s2-grid textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* While an interaction is open the passage is locked: no new selection
+   until the reader finishes and presses the unlock button. */
+.passage-body.locked,
+.passage-body.locked * {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+/* Inline unlock button, sits right after the highlighted span so the reader
+   never has to hunt for it in the sidebar. */
+.inline-unlock {
+  display: inline-block;
+  margin: 0 6px;
+  padding: 2px 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  vertical-align: baseline;
+  background: #2f6f2f;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  letter-spacing: 0;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.inline-unlock:hover {
+  background: #245524;
+}
+.inline-unlock:focus-visible {
+  outline: 2px solid #d6a100;
+  outline-offset: 2px;
+}
+
+.passage-body::selection,
+.passage-body ::selection {
+  background: #cfe3f7;
+}
+
+/* ------------------------------------------------------------------ */
+/* Sidebar transcript                                                  */
+/* Reads as a chat panel: user turns align right, AI turns align left, */
+/* each with a small role label. Free-form chat is NOT enabled — the   */
+/* composer accepts only whatever the current ladder rung asks for.    */
+/* ------------------------------------------------------------------ */
+
+.chat-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 12px;
+  min-height: 0; /* lets the flex child actually shrink and scroll */
+}
+
+.chat-footer {
+  flex: 0 0 auto;
+  border-top: 1px solid #e3e3e3;
+  padding: 12px;
+  background: #fbfaf8;
+}
+
+.chat-row {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 10px;
+}
+.chat-row.user {
+  align-items: flex-end;
+}
+.chat-row.system {
+  align-items: flex-start;
+}
+.chat-role {
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 2px;
+  letter-spacing: 0.5px;
+}
+
+.chat-msg {
+  max-width: 82%;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.chat-msg.user {
+  background: #dbe6f5;
+  color: #1c2c44;
+  border-bottom-right-radius: 2px;
+}
+
+.chat-msg.system {
+  background: #f2ede3;
+  color: #2b2621;
+  border-bottom-left-radius: 2px;
+}
+
+.chat-msg.pending {
+  color: #888;
+  font-style: italic;
+}
+
+.chat-mark {
+  align-self: stretch;
+  font-size: 12px;
+  color: #666;
+  margin: 14px 0 8px;
+  padding-top: 10px;
+  border-top: 1px dashed #ddd;
+}
+
+.chat-mark:first-child {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.chat-composer-idle {
+  color: #888;
+  font-size: 13px;
+  padding: 6px 4px;
+}
+
+.mental-effort-scale fieldset {
+  border: 1px solid #d7d1c8;
+  border-radius: 8px;
+  padding: 18px;
+  max-width: 920px;
+}
+
+.mental-effort-scale legend {
+  font-weight: 600;
+  padding: 0 6px;
+}
+
+.scale-hint {
+  color: #666;
+  font-size: 14px;
+  margin-top: 0;
+}
+
+.scale-options {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(70px, 1fr));
+  gap: 8px;
+  margin: 16px 0 6px;
+}
+
+.scale-option {
+  align-items: center;
+  border: 1px solid #ddd5ca;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 88px;
+  padding: 10px 5px;
+  text-align: center;
+}
+
+.scale-option:has(input:checked) {
+  background: #f2ede3;
+  border-color: #8d7659;
+}
+
+.scale-option span {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+@media (max-width: 760px) {
+  .scale-options {
+    grid-template-columns: repeat(3, minmax(80px, 1fr));
+  }
+}

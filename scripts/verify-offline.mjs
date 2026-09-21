@@ -154,7 +154,8 @@ walk(path.join(out, 'scripts'));
 // The app/ folder needs React/Next, which this harness does not run.
 rmSync(path.join(out, 'src', 'app'), { recursive: true, force: true });
 
-const testFiles = readdirSync(path.join(out, 'tests')).filter((f) => f.endsWith('.test.ts'));
+// Integration suites need the installed PostgreSQL runtime; npm test runs them.
+const testFiles = readdirSync(path.join(out, 'tests')).filter((f) => f.endsWith('.test.ts') && !f.endsWith('.integration.test.ts'));
 let failed = false;
 for (const f of testFiles) {
   const entry = path.join(out, 'tests', `run-${f.replace('.test.ts', '')}.ts`);

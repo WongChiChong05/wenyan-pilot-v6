@@ -9,14 +9,27 @@ import type { LadderState } from './types';
  * by construction rather than by prompt discipline.
  *
  *   layer1 --correct+reason--> explanation
- *          --wrong----------> layer2 --correct+reason--> explanation
- *                                    --wrong----------> layer3_choice
+ *          --wrong+reason--> layer2 --correct+reason--> explanation
+ *                                   --wrong+reason---> layer3_choice
  *   layer3_choice --reason accepted--> explanation (right or wrong answer)
  *                 --reason rejected--> reason_rejected --> layer3_choice (max 2x)
  *   explanation --reader clicks 看完了--> done
+ *
+ * TWO WAYS TO ANSWER LAYERS 1-2
+ *   target sentence -> multiple choice + required reason  (`layer_choice` then `reason`)
+ *   free highlight  -> open text                          (`free_answer`)
+ * Both end in the same places. A rejected reason at layer 1 or 2 keeps the reader on the
+ * SAME step — it does not use `reason_rejected`, which belongs to the bottom-out only.
+ *
+ * A correct pick alone never opens the explanation: the reason must be accepted too.
+ * Without that rule a 3-option choice would let one reader in three skip the whole ladder
+ * by guessing, and the questioning manipulation would not have happened for them.
  */
 export type LadderEvent =
   | { kind: 'free_answer'; correct: boolean; hasReason: boolean }
+  /** a layer-1 or layer-2 multiple choice (target sentences) */
+  | { kind: 'layer_choice'; index: number; correct: boolean }
+  /** the layer-3 bottom-out choice */
   | { kind: 'choice'; index: number; correct: boolean }
   | { kind: 'reason'; accepted: boolean }
   | { kind: 'read_done' };
@@ -34,20 +47,57 @@ export function reduce(state: LadderState, event: LadderEvent): LadderState {
   switch (state.step) {
     case 'layer1':
     case 'layer2': {
-      if (event.kind !== 'free_answer') return state;
-      if (event.correct && event.hasReason) {
+      const layer = state.step === 'layer1' ? 1 : 2;
+      const nextStep = state.step === 'layer1' ? ('layer2' as const) : ('layer3_choice' as const);
+
+      // ---- multiple-choice path (target sentences) ----
+      if (event.kind === 'layer_choice') {
+        // Record the pick and wait for the reason; the pair arrives as two events.
+        const pick = { index: event.index, correct: event.correct };
+        return layer === 1 ? { ...state, layer1Pick: pick } : { ...state, layer2Pick: pick };
+      }
+      if (event.kind === 'reason') {
+        const pick = layer === 1 ? state.layer1Pick : state.layer2Pick;
+        if (!pick) return state; // a reason with no pick: ignore
+        const rejections = event.accepted ? state.reasonRejections : state.reasonRejections + 1;
+        const total = (state.reasonRejectionsTotal ?? 0) + (event.accepted ? 0 : 1);
+        const forced = !event.accepted && shouldForceAccept(rejections);
+
+        if (!event.accepted && !forced) {
+          // stay on this layer and ask for a better reason
+          return { ...state, reasonRejections: rejections, reasonRejectionsTotal: total };
+        }
+        if (pick.correct) {
+          return {
+            ...state,
+            step: 'explanation',
+            correctBefore: true,
+            correctAtLayer: layer,
+            reasonRejections: rejections,
+            reasonRejectionsTotal: total,
+            reasonInsufficient: state.reasonInsufficient || forced,
+          };
+        }
+        // wrong pick, reason settled: go down a rung. Each layer gets its own two tries.
         return {
           ...state,
-          step: 'explanation',
-          correctBefore: true,
-          correctAtLayer: state.step === 'layer1' ? 1 : 2,
+          step: nextStep,
+          reasonRejections: 0,
+          reasonRejectionsTotal: total,
+          reasonInsufficient: state.reasonInsufficient || forced,
         };
+      }
+
+      // ---- open-text path (free highlights) ----
+      if (event.kind !== 'free_answer') return state;
+      if (event.correct && event.hasReason) {
+        return { ...state, step: 'explanation', correctBefore: true, correctAtLayer: layer };
       }
       if (event.correct && !event.hasReason) {
         // answered right but gave no reason: probe, stay on the same layer
         return state;
       }
-      return { ...state, step: state.step === 'layer1' ? 'layer2' : 'layer3_choice' };
+      return { ...state, step: nextStep };
     }
     case 'layer3_choice': {
       if (event.kind === 'choice') {
@@ -56,10 +106,22 @@ export function reduce(state: LadderState, event: LadderEvent): LadderState {
       if (event.kind === 'reason') {
         if (event.accepted) return { ...state, step: 'explanation' };
         const rejections = state.reasonRejections + 1;
+        const total = (state.reasonRejectionsTotal ?? 0) + 1;
         if (shouldForceAccept(rejections)) {
-          return { ...state, step: 'explanation', reasonRejections: rejections, reasonInsufficient: true };
+          return {
+            ...state,
+            step: 'explanation',
+            reasonRejections: rejections,
+            reasonRejectionsTotal: total,
+            reasonInsufficient: true,
+          };
         }
-        return { ...state, step: 'reason_rejected', reasonRejections: rejections };
+        return {
+          ...state,
+          step: 'reason_rejected',
+          reasonRejections: rejections,
+          reasonRejectionsTotal: total,
+        };
       }
       return state;
     }
@@ -67,10 +129,17 @@ export function reduce(state: LadderState, event: LadderEvent): LadderState {
       if (event.kind === 'reason') {
         if (event.accepted) return { ...state, step: 'explanation' };
         const rejections = state.reasonRejections + 1;
+        const total = (state.reasonRejectionsTotal ?? 0) + 1;
         if (shouldForceAccept(rejections)) {
-          return { ...state, step: 'explanation', reasonRejections: rejections, reasonInsufficient: true };
+          return {
+            ...state,
+            step: 'explanation',
+            reasonRejections: rejections,
+            reasonRejectionsTotal: total,
+            reasonInsufficient: true,
+          };
         }
-        return { ...state, reasonRejections: rejections };
+        return { ...state, reasonRejections: rejections, reasonRejectionsTotal: total };
       }
       return state;
     }

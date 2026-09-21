@@ -72,17 +72,29 @@ async function runOne(store: MemoryStore, forcedArm: Arm | null) {
     let cur = (await store.getParticipant(p.id))!;
     let turn = await engine.startAssist(cur, t.text);
     if (arm === 'socratic') {
-      if (turn.kind !== 'question') throw new Error('socratic arm must start with a question');
+      // Every rung of a target sentence is a multiple choice plus a required reason.
+      const wrong = (spec?: { answerIndex: number }) => (spec && spec.answerIndex === 0 ? 1 : 0);
+      const because = `因為看到${t.text.slice(0, 2)}`;
+
+      if (turn.kind !== 'choice') throw new Error('socratic layer 1 must be a multiple choice');
+      if (turn.choice?.options.length !== t.layer1Choice?.options.length) {
+        throw new Error('layer 1 must present the pre-written options');
+      }
       cur = (await store.getParticipant(p.id))!;
-      turn = await engine.reply(cur, { kind: 'answer', text: '不知道' });
+      turn = await engine.reply(cur, { kind: 'choice', index: wrong(t.layer1Choice), reason: because });
+      if (turn.kind !== 'choice') throw new Error('a wrong layer-1 pick must drop to layer 2');
+
       cur = (await store.getParticipant(p.id))!;
-      turn = await engine.reply(cur, { kind: 'answer', text: '真的不知道' });
+      turn = await engine.reply(cur, { kind: 'choice', index: wrong(t.layer2Choice), reason: because });
       if (turn.kind !== 'choice') throw new Error('third layer must be the multiple choice');
+
       cur = (await store.getParticipant(p.id))!;
       turn = await engine.reply(cur, { kind: 'choice', index: 0, reason: '不知道' });
       if (turn.kind !== 'reject') throw new Error('contentless reason must be rejected');
+      if (!turn.choice) throw new Error('a rejection must resend the options');
+
       cur = (await store.getParticipant(p.id))!;
-      turn = await engine.reply(cur, { kind: 'choice', index: 0, reason: `因為看到${t.text.slice(0, 2)}` });
+      turn = await engine.reply(cur, { kind: 'choice', index: 0, reason: because });
       if (turn.kind !== 'explanation') throw new Error('explanation should appear after a reason');
       if (turn.text.slice(0, 10) !== t.explanation.slice(0, 10)) {
         throw new Error('socratic explanation must be the pre-written one');
@@ -92,7 +104,11 @@ async function runOne(store: MemoryStore, forcedArm: Arm | null) {
       if (turn.kind !== 'explanation') throw new Error('direct arm explains immediately');
       if (turn.text !== t.explanation) throw new Error('direct explanation must be the pre-written one');
     }
-    if (arm !== 'control') {
+    if (arm === 'control') {
+      // Control has no four-sentence gate: it must already be free to continue after
+      // its very first mark, and must never be blocked by the lower bound.
+      if (!turn.lowerBoundMet) throw new Error('control must never be gated by the lower bound');
+    } else {
       const cur2 = (await store.getParticipant(p.id))!;
       await engine.reply(cur2, { kind: 'read_done' });
     }
@@ -101,7 +117,7 @@ async function runOne(store: MemoryStore, forcedArm: Arm | null) {
   const afterS2 = (await store.getParticipant(p.id))!;
   if (afterS2.completedTargets.length !== 4) throw new Error('lower bound not recorded');
 
-  // S3 -> S4 -> S5 -> S6
+  // S4 -> S3 -> S5 -> S6 (mental effort is collected immediately after S2)
   let stage = afterS2.stage;
   for (const s of ['S3', 'S5'] as const) {
     const items = ITEMS_BY_STAGE[s];

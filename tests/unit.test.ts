@@ -1,19 +1,37 @@
 import { describe, expect, it } from 'vitest';
-import { classifyGranularity, lowerBoundMet, matchTarget } from '../src/lib/highlight';
+import {
+  classifyGranularity,
+  lowerBoundApplies,
+  lowerBoundMet,
+  matchTarget,
+  neighborhoodOf,
+  sentenceRanges,
+  showsTargetHints,
+} from '../src/lib/highlight';
 import { endPosition, explanationAllowed, initialLadder, reduce } from '../src/lib/ladder';
-import { checkDirectOutput, checkSocraticOutput, isYesNoQuestion, leakRate } from '../src/lib/leak';
+import {
+  checkDirectOutput,
+  checkSocraticOptions,
+  checkSocraticOutput,
+  isYesNoQuestion,
+  leakRate,
+  validateChoiceStructure,
+} from '../src/lib/leak';
 import { assignArm, mulberry32, stratumOf } from '../src/lib/randomize';
 import { ruleCheckReason, shouldForceAccept } from '../src/lib/reasonGate';
 import { cohensKappa, cronbachAlpha, itemStats, scoreQuiz } from '../src/lib/scoring';
+import { socraticSystemPrompt, socraticTurnPrompt } from '../src/lib/prompts';
 import { LEARNING_PASSAGE } from '../src/content/passages';
 import type { Item } from '../src/lib/types';
+import { fallbackFocusOptions, focusOccursInSelection, validateFocusOptions } from '../src/lib/focus';
 
-describe('highlight granularity (design doc 3.3)', () => {
-  it('counts <= 4 characters as a word, ignoring punctuation', () => {
+describe('highlight granularity (pilot v5.4: one char = word, else at least sentence)', () => {
+  it('treats a single Chinese character as a word, ignoring stray punctuation', () => {
     expect(classifyGranularity('之')).toBe('word');
-    expect(classifyGranularity('擊之，')).toBe('word');
+    expect(classifyGranularity('之，')).toBe('word');
   });
-  it('treats a span inside one sentence as a sentence', () => {
+  it('treats two or more characters as a sentence when nothing is crossed', () => {
+    expect(classifyGranularity('擊之')).toBe('sentence');
     expect(classifyGranularity('以鐵如意擊之，應手而碎')).toBe('sentence');
   });
   it('treats a span crossing a sentence end as a passage', () => {
@@ -21,6 +39,131 @@ describe('highlight granularity (design doc 3.3)', () => {
   });
   it('does not count a trailing full stop as crossing', () => {
     expect(classifyGranularity('愷惘然自失。')).toBe('sentence');
+  });
+});
+
+describe('focus-option validation', () => {
+  it('keeps options inside the highlight and ranks known proper nouns last', () => {
+    const report = validateFocusOptions(
+      ['武帝', '嘗', '降'],
+      '武帝嘗降王武子家',
+      LEARNING_PASSAGE.annotations
+    );
+    expect(report.ok).toBe(true);
+    expect(report.options).toEqual(['嘗', '降', '武帝']);
+  });
+  it('rejects invented options and validates typed other values', () => {
+    expect(validateFocusOptions(['異', '不存在'], '異於常味', LEARNING_PASSAGE.annotations).ok).toBe(false);
+    expect(focusOccursInSelection('異於常味', '常味')).toBe(true);
+    expect(focusOccursInSelection('異於常味', '帝')).toBe(false);
+    expect(fallbackFocusOptions('異於常味', LEARNING_PASSAGE.annotations)).toEqual(['異', '於', '常', '味']);
+  });
+});
+
+// Task-2 undo of the old snap: no more normaliseSelection. The engine stores the
+// reader's selection verbatim; sentenceRanges is exported so neighborhoodOf can
+// slice the surrounding sentences for the Task-B prompt.
+describe('sentenceRanges + neighborhoodOf (Task-B prompt context)', () => {
+  const T2 = LEARNING_PASSAGE.text;
+
+  it('covers the whole passage with non-overlapping sentence ranges', () => {
+    const ranges = sentenceRanges(T2);
+    expect(ranges[0].start).toBe(0);
+    expect(ranges[ranges.length - 1].end).toBe(T2.length);
+    for (let i = 1; i < ranges.length; i++) {
+      expect(ranges[i].start).toBe(ranges[i - 1].end);
+    }
+  });
+
+  it('absorbs a closing quote so 「以人乳飲㹠。」 stays whole', () => {
+    const start = T2.indexOf('「以人乳飲㹠');
+    const ranges = sentenceRanges(T2);
+    const r = ranges.find((x) => x.start <= start && x.end > start)!;
+    expect(T2.slice(r.start, r.end).endsWith('」')).toBe(true);
+  });
+
+  it('returns previous/containing/next sentences around a target selection', () => {
+    const start = T2.indexOf('以鐵如意擊之，應手而碎');
+    const end = start + '以鐵如意擊之，應手而碎'.length;
+    const nb = neighborhoodOf(T2, start, end);
+    expect(nb.containing).toContain('以鐵如意擊之，應手而碎');
+    expect(nb.containing.startsWith('崇視訖，')).toBe(true);
+    // there is a sentence before this one in the passage
+    expect(nb.prev.length).toBeGreaterThan(0);
+    // and one after
+    expect(nb.next.length).toBeGreaterThan(0);
+  });
+
+  it('returns an empty prev when the selection is in the first sentence', () => {
+    const start = 0;
+    const end = 3;
+    const nb = neighborhoodOf(T2, start, end);
+    expect(nb.prev).toBe('');
+  });
+});
+
+describe('Task-A leak-check on generated options and structural validation', () => {
+  it('flags an option that states a meaning', () => {
+    const rep = checkSocraticOptions(['觀察一', '意思是珊瑚樹', '觀察三']);
+    expect(rep.ok).toBe(false);
+    expect(rep.flags.some((f) => f.startsWith('option1:'))).toBe(true);
+  });
+  it('passes clean structural options', () => {
+    const rep = checkSocraticOptions(['前面', '後面', '兩邊']);
+    expect(rep.ok).toBe(true);
+  });
+  it('rejects fewer than 3 options', () => {
+    expect(validateChoiceStructure(['a', 'b'], 0).ok).toBe(false);
+  });
+  it('rejects empty and duplicate options', () => {
+    expect(validateChoiceStructure(['a', '', 'c'], 0).ok).toBe(false);
+    expect(validateChoiceStructure(['a', 'a', 'b'], 0).ok).toBe(false);
+  });
+  it('rejects an out-of-range answerIndex', () => {
+    expect(validateChoiceStructure(['a', 'b', 'c'], 9).ok).toBe(false);
+    expect(validateChoiceStructure(['a', 'b', 'c'], -1).ok).toBe(false);
+  });
+});
+
+describe('Task-B: socratic prompts carry offset + neighbourhood, no more 「這個字」 branch', () => {
+  const T2 = LEARNING_PASSAGE.text;
+  it('includes the character offset and the three labelled sentences', () => {
+    const start = T2.indexOf('以鐵如意擊');
+    const end = start + '以鐵如意擊'.length;
+    const nb = neighborhoodOf(T2, start, end);
+    const prompt = socraticTurnPrompt({
+      passage: T2,
+      selection: '以鐵如意擊',
+      selectionStart: start,
+      selectionEnd: end,
+      neighborhood: nb,
+      layer: 1,
+      granularity: 'sentence',
+      withOptions: true,
+    });
+    expect(prompt).toContain(`選取位置：第 ${start}`);
+    expect(prompt).toContain('【前一句】');
+    expect(prompt).toContain('【所在句】');
+    expect(prompt).toContain('【後一句】');
+  });
+
+  it('asks for options+answerIndex when withOptions is set', () => {
+    const prompt = socraticTurnPrompt({
+      passage: T2,
+      selection: '之',
+      layer: 1,
+      granularity: 'word',
+      withOptions: true,
+    });
+    expect(prompt).toContain('三個觀察選項');
+    expect(prompt).toContain('answerIndex');
+  });
+
+  it('system prompt forbids saying 「這個字」 for multi-character selections and forbids meaning-stating options', () => {
+    const sys = socraticSystemPrompt();
+    expect(sys).toContain('禁用');
+    expect(sys).toContain('這個字');
+    expect(sys).toContain('每個選項都不得說出字詞的意思');
   });
 });
 
@@ -35,6 +178,49 @@ describe('target matching and the lower bound', () => {
   it('is met only when every target has been completed', () => {
     expect(lowerBoundMet(LEARNING_PASSAGE, ['TS1', 'TS2', 'TS3'])).toBe(false);
     expect(lowerBoundMet(LEARNING_PASSAGE, ['TS1', 'TS2', 'TS3', 'TS4'])).toBe(true);
+  });
+
+  // Usage is voluntary in every arm now: how much of the assistant a reader chooses is
+  // the thing being observed, so nothing gates on it. The four-sentence milestone is
+  // still COMPUTED, because it is reported as a result.
+  it('gates no arm', () => {
+    expect(lowerBoundApplies('socratic')).toBe(false);
+    expect(lowerBoundApplies('direct')).toBe(false);
+    expect(lowerBoundApplies('control')).toBe(false);
+  });
+  it('reports met for every arm whatever they marked, so nobody is blocked', () => {
+    for (const arm of ['socratic', 'direct', 'control'] as const) {
+      expect(lowerBoundMet(LEARNING_PASSAGE, [], arm)).toBe(true);
+      expect(lowerBoundMet(LEARNING_PASSAGE, ['TS1'], arm)).toBe(true);
+    }
+  });
+  // Called without an arm it is still the plain four-sentence predicate, which is what
+  // the `targets_incomplete` flag and the usage dashboard are built on.
+  it('still computes the real milestone when no arm is passed', () => {
+    expect(lowerBoundMet(LEARNING_PASSAGE, ['TS1'])).toBe(false);
+    expect(lowerBoundMet(LEARNING_PASSAGE, ['TS1', 'TS2', 'TS3', 'TS4'])).toBe(true);
+  });
+  // Nothing is shaded for anyone now: a shaded sentence is a cue even without a quota.
+  it('shades the target sentences for nobody', () => {
+    for (const arm of ['socratic', 'direct', 'control'] as const) {
+      expect(showsTargetHints(arm)).toBe(false);
+    }
+  });
+  // ...but the hand-written ladders still fire on the TEXT, not on the shading.
+  it('still matches a target sentence the reader happened to select', () => {
+    expect(matchTarget(LEARNING_PASSAGE, '以鐵如意擊之')).toBe('TS1');
+  });
+  it('resolves an ambiguous 「之」 by offset when the client sends one', () => {
+    // Two targets contain 「之」: TS1 (擊之) and TS2 (愷之甥也). The character
+    // clicked in 「愷之甥也」 must resolve to TS2, not to whichever sentence
+    // contains a 「之」 first.
+    const start = LEARNING_PASSAGE.text.indexOf('愷之甥也') + 1; // the 之
+    expect(matchTarget(LEARNING_PASSAGE, '之', start)).toBe('TS2');
+  });
+  it('falls back to substring search when the offset does not match the text', () => {
+    // A hostile or buggy client cannot make the server believe a selection came
+    // from somewhere it did not.
+    expect(matchTarget(LEARNING_PASSAGE, '擊之', 0)).toBe('TS1');
   });
 });
 
@@ -120,6 +306,11 @@ describe('leak detection (manipulation check)', () => {
   it('passes a plain question', () => {
     expect(checkSocraticOutput('這個字在句子什麼位置？前後是什麼詞性？').ok).toBe(true);
   });
+  it('rejects an adjacent-character copying question', () => {
+    const report = checkSocraticOutput('「異」字後面緊接著什麼？');
+    expect(report.ok).toBe(false);
+    expect(report.flags).toContain('low_value:adjacent_copy');
+  });
   it('flags a whole-passage translation from the direct arm', () => {
     const passage = '甲乙丙丁。戊己庚辛。壬癸子丑。';
     expect(checkDirectOutput('甲乙丙丁。戊己庚辛。壬癸子丑。', passage).ok).toBe(false);
@@ -199,5 +390,61 @@ describe('scoring', () => {
     const human = [true, true, false, false, true];
     expect(cohensKappa(human, human)).toBeCloseTo(1);
     expect(cohensKappa(human, [true, false, false, true, true])).toBeLessThan(1);
+  });
+});
+
+describe('ladder: multiple choice + reason on rungs 1 and 2', () => {
+  const pick = (state: ReturnType<typeof initialLadder>, correct: boolean, accepted: boolean) =>
+    reduce(reduce(state, { kind: 'layer_choice', index: 0, correct }), {
+      kind: 'reason',
+      accepted,
+    });
+
+  it('opens the explanation only when the pick is right AND the reason is accepted', () => {
+    const s0 = initialLadder();
+    const won = pick(s0, true, true);
+    expect(won.step).toBe('explanation');
+    expect(won.correctAtLayer).toBe(1);
+    expect(endPosition(won)).toBe('layer1_correct');
+  });
+
+  it('keeps a lucky pick on the same rung when the reason is rejected', () => {
+    const s0 = initialLadder();
+    const stuck = pick(s0, true, false);
+    expect(stuck.step).toBe('layer1'); // NOT explanation: guessing must not skip the ladder
+    expect(stuck.reasonRejections).toBe(1);
+  });
+
+  it('drops a wrong pick with a good reason to the next rung', () => {
+    const s0 = initialLadder();
+    const down = pick(s0, false, true);
+    expect(down.step).toBe('layer2');
+    expect(down.reasonRejections).toBe(0); // each rung gets its own two tries
+    const down2 = pick(down, false, true);
+    expect(down2.step).toBe('layer3_choice');
+  });
+
+  // Same budget as the bottom-out: two rejections, then the reader is let through
+  // with reasonInsufficient set, so nobody can be trapped on one rung.
+  it('force-accepts after two rejections and flags it', () => {
+    let s = initialLadder();
+    s = pick(s, false, false); // rejection 1
+    expect(s.step).toBe('layer1');
+    expect(s.reasonRejections).toBe(1);
+    s = pick(s, false, false); // rejection 2 -> forced through
+    expect(s.step).toBe('layer2');
+    expect(s.reasonInsufficient).toBe(true);
+    expect(s.reasonRejectionsTotal).toBe(2);
+  });
+
+  it('still reaches the bottom-out and records how it ended', () => {
+    let s = initialLadder();
+    s = pick(s, false, true);
+    s = pick(s, false, true);
+    expect(s.step).toBe('layer3_choice');
+    s = reduce(s, { kind: 'choice', index: 1, correct: false });
+    s = reduce(s, { kind: 'reason', accepted: true });
+    expect(s.step).toBe('explanation');
+    expect(endPosition(s)).toBe('choice_wrong');
   });
 });

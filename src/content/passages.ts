@@ -40,6 +40,7 @@ const countChars = (s: string) => s.replace(/[^一-鿿]/g, '').length;
 export const PRETEST_PASSAGE: Passage = {
   id: 'P0',
   title: '世說新語·汰侈 2（石崇廁）',
+  displayTitle: '短文（一）',
   source: '維基文庫（待以注譯本核校）',
   verified: false,
   text: PRETEST_TEXT,
@@ -70,6 +71,7 @@ export const PRETEST_PASSAGE: Passage = {
 export const LEARNING_PASSAGE: Passage = {
   id: 'T2',
   title: '世說新語·汰侈 3＋8（人乳飲㹠、珊瑚樹）',
+  displayTitle: '短文（二）',
   source: '維基文庫（待以注譯本核校）',
   verified: false,
   text: T2_TEXT,
@@ -153,8 +155,18 @@ export const LEARNING_PASSAGE: Passage = {
           '（草稿）作「往、去」時後面會接地點，這裡沒有。',
         ],
       },
-      layer1: '這個字在句子什麼位置？前後是什麼詞性？',
-      layer2: '前面的「擊」是一個動作。被敲的東西出現在句子的哪裡？',
+      // 每一層都指名要看的那個字。舊版四句共用「這個字在句子什麼位置？」，
+      // 但讀者點的是整句，畫面上沒有任何東西指出「這個字」是哪一個字。
+      layer1: '先看這一句裡的「之」。它前面緊接著的「擊」，是一個動作還是一個東西？',
+      layer1Choice: {
+        options: ['一個動作（敲、打）', '一個東西（器物）', '一個形容的詞'],
+        answerIndex: 0,
+      },
+      layer2: '「擊」是一個動作。那麼「被敲的東西」在這句話裡出現在哪裡？',
+      layer2Choice: {
+        options: ['在「擊」的前面', '在「擊」的後面', '這句話裡沒有寫出來'],
+        answerIndex: 1,
+      },
       acceptableAnswers: ['代詞', '代名詞', '指珊瑚樹', '被敲的東西', '它'],
       draft: true,
     },
@@ -173,8 +185,16 @@ export const LEARNING_PASSAGE: Passage = {
           '（草稿）作「往、去」時後面接地點。',
         ],
       },
-      layer1: '這個字在句子什麼位置？前後是什麼詞性？',
+      layer1: '先看這一句裡的「之」。它的前面是「愷」，後面是「甥」，這兩個都是什麼詞？',
+      layer1Choice: {
+        options: ['都是人或身分（名詞）', '都是動作', '一個是動作，一個是名詞'],
+        answerIndex: 0,
+      },
       layer2: '「愷」和「甥」都是名詞。夾在兩個名詞中間的字，通常在做什麼？',
+      layer2Choice: {
+        options: ['把後面那個身分歸到前面那個人身上', '表示一個動作', '表示時間的先後'],
+        answerIndex: 0,
+      },
       acceptableAnswers: ['的', '助詞', '相當於的'],
       draft: true,
     },
@@ -189,8 +209,17 @@ export const LEARNING_PASSAGE: Passage = {
         answerIndex: 1,
         whyWrong: ['（草稿）光彩不能用「枚」計算。', '', '（草稿）文中沒有在數眼睛。'],
       },
-      layer1: '這個字在句子什麼位置？前後是什麼詞性？',
-      layer2: '「六七枚」在數什麼？往前找，被數的東西是哪一個詞？',
+      layer1: '先看這一句裡的「者」。它前面的「光彩溢目」，是在描述一個東西的樣子，還是在說一個動作？',
+      layer1Choice: {
+        options: ['描述一個東西的樣子', '說一個動作', '說一個時間'],
+        answerIndex: 0,
+      },
+      // 層二問「者」的功能，層三才問它指的是什麼，兩層不重複。
+      layer2: '那麼「者」這個字在這裡的作用，比較像下面哪一種？',
+      layer2Choice: {
+        options: ['把一段形容接到被形容的東西上', '表示這是一個問句', '表示「……的時候」'],
+        answerIndex: 0,
+      },
       acceptableAnswers: ['珊瑚樹', '珊瑚', '樹'],
       draft: true,
     },
@@ -205,8 +234,16 @@ export const LEARNING_PASSAGE: Passage = {
         answerIndex: 1,
         whyWrong: ['（草稿）作「用」時後面會接名詞，這裡後面是動作「飾」。', '', '（草稿）文中沒有在說原因。'],
       },
-      layer1: '這個字在句子什麼位置？前後是什麼詞性？',
-      layer2: '「以」後面接的是名詞還是動作？跟前面那句是什麼關係？',
+      layer1: '先看這一句裡的「以」。它後面緊接著的「飾」，是一個東西還是一個動作？',
+      layer1Choice: {
+        options: ['一個動作（裝飾）', '一個東西（飾品）', '一個形容的詞'],
+        answerIndex: 0,
+      },
+      layer2: '「飾輿服」和前面的「並窮綺麗」是什麼關係？',
+      layer2Choice: {
+        options: ['前面是做法，後面是要達到的目的', '前面是原因，後面是結果', '兩件互不相干的事'],
+        answerIndex: 0,
+      },
       acceptableAnswers: ['來', '連詞', '用來'],
       draft: true,
     },
@@ -216,6 +253,7 @@ export const LEARNING_PASSAGE: Passage = {
 export const TRANSFER_PASSAGE: Passage = {
   id: 'T1',
   title: '世說新語·汰侈 5＋11（豆粥、彭城王快牛）',
+  displayTitle: '短文（三）',
   source: '維基文庫（待以注譯本核校）',
   verified: false,
   text: T1_TEXT,
@@ -252,6 +290,7 @@ const S6_TEXT =
 export const DELAYED_PASSAGE: Passage = {
   id: 'S6',
   title: '周書·王褒傳（節選）',
+  displayTitle: '短文（四）',
   source: '澳門四高校聯合入學考試 2024 中文科試卷（底本：《周書》卷四十一，唐·令狐德棻等撰）',
   verified: false,
   text: S6_TEXT,

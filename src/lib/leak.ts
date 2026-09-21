@@ -33,6 +33,11 @@ export const BANNED_TERMS = [
 ];
 
 const YESNO_MARKERS = ['是不是', '對不對', '有沒有', '會不會', '能不能', '可不可以', '是否'];
+const LOW_VALUE_COPY_PATTERNS = [
+  /(?:前面|後面)(?:緊)?(?:接著|接的|是)什麼(?:字|詞)?/,
+  /哪個字(?:緊)?(?:接在|跟在).*(?:前面|後面)/,
+  /第幾個字/,
+];
 
 export interface LeakReport {
   ok: boolean;
@@ -44,7 +49,50 @@ export function checkSocraticOutput(text: string): LeakReport {
   for (const p of BANNED_PHRASES) if (text.includes(p)) flags.push(`phrase:${p}`);
   for (const t of BANNED_TERMS) if (text.includes(t)) flags.push(`term:${t}`);
   if (isYesNoQuestion(text)) flags.push('yesno');
+  if (LOW_VALUE_COPY_PATTERNS.some(pattern => pattern.test(text))) flags.push('low_value:adjacent_copy');
   if ([...text].length > 60) flags.push('too_long');
+  return { ok: flags.length === 0, flags };
+}
+
+/**
+ * Task-A: leak-check every option of a generated MCQ at layers 1 or 2.
+ *
+ * A layer-1 option like 「代詞，指珊瑚樹」 states the answer the ladder is meant to
+ * reach at layer 3, so it must be treated as a leak the same way a question stem
+ * containing 「意思是」 is. This runs the socratic checker over each option and
+ * prefixes the flags with `option{i}:`.
+ *
+ * Layer 3 is the bottom-out — its options *are* the answer, by design. Do not
+ * call this on layer-3 options.
+ */
+export function checkSocraticOptions(options: string[]): LeakReport {
+  const flags: string[] = [];
+  options.forEach((opt, i) => {
+    const inner = checkSocraticOutput(opt);
+    for (const f of inner.flags) flags.push(`option${i}:${f}`);
+  });
+  return { ok: flags.length === 0, flags };
+}
+
+/**
+ * Task-A structural validation of a generated MCQ shape. Same regen-once, then
+ * fall back semantics as the leak check.
+ *
+ * Reject: <3 options, an empty option, duplicates, answerIndex out of range.
+ */
+export function validateChoiceStructure(
+  options: string[],
+  answerIndex: number
+): LeakReport {
+  const flags: string[] = [];
+  if (options.length < 3) flags.push(`structure:too_few_options:${options.length}`);
+  if (options.length > 3) flags.push(`structure:too_many_options:${options.length}`);
+  const trimmed = options.map((o) => (o ?? '').trim());
+  if (trimmed.some((o) => o.length === 0)) flags.push('structure:empty_option');
+  if (new Set(trimmed).size < trimmed.length) flags.push('structure:duplicate_option');
+  if (!Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex >= options.length) {
+    flags.push(`structure:answer_index_out_of_range:${answerIndex}`);
+  }
   return { ok: flags.length === 0, flags };
 }
 

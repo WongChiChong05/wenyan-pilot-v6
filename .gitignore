@@ -3,3 +3,7 @@ node_modules
 data
 .verify
 .env.local
+backups/
+tmp/
+.env.*.local
+*.tsbuildinfo
