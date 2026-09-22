@@ -2,6 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { COGNITIVE_LOAD_ITEMS, type CognitiveLoadItemId } from '@/lib/cognitiveLoad';
 
 interface StageView {
   stage: string;
@@ -518,13 +519,16 @@ function ChatPanel({
   messages,
   turn,
   pending,
+  pendingAction,
   degraded,
   children,
 }: {
   messages: ChatMessage[];
   turn: AssistTurn | null;
-  /** true while a reply is in flight; renders an AI-side thinking bubble */
+  /** true while a reply or state transition is in flight */
   pending: boolean;
+  /** read_done is storage-only and must never be presented as model inference. */
+  pendingAction: string | null;
   degraded?: boolean;
   children?: ReactNode;
 }) {
@@ -534,6 +538,7 @@ function ChatPanel({
   }, [messages.length, turn?.text, pending]);
 
   let lastInteraction = '';
+  const saving = pendingAction === 'read_done';
   return (
     <aside className="s2-aside">
       <div
@@ -570,8 +575,8 @@ function ChatPanel({
         })}
         {pending && (
           <div className="chat-row system">
-            <span className="chat-role">AI</span>
-            <p className="chat-msg system pending">AI 正在想…</p>
+            <span className="chat-role">{saving ? '系統' : 'AI'}</span>
+            <p className="chat-msg system pending">{saving ? '正在儲存…' : 'AI 正在想…'}</p>
           </div>
         )}
         {degraded && !pending && (
@@ -621,6 +626,7 @@ function Reading({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [notice, setNotice] = useState('');
   const [posting, setPosting] = useState(false);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
 
   // Whether this arm has the four-sentence gate at all. Control does not.
   const gated = view.lowerBound?.applies ?? true;
@@ -666,6 +672,7 @@ function Reading({
 
   const post = async (payload: Record<string, unknown>) => {
     setPosting(true);
+    setPendingAction(typeof payload.action === 'string' ? payload.action : null);
     try {
       const res = await fetch('/api/assist', {
         method: 'POST',
@@ -698,6 +705,7 @@ function Reading({
       await loadTranscript();
     } finally {
       setPosting(false);
+      setPendingAction(null);
     }
   };
 
@@ -940,6 +948,7 @@ function Reading({
           messages={messages}
           turn={turn}
           pending={posting}
+          pendingAction={pendingAction}
           degraded={turn?.degraded}
         >
           {composer}
@@ -966,6 +975,17 @@ function Quiz({
   answersRef.current = answers;
   const submitting = useRef(false);
   const [submitError, setSubmitError] = useState('');
+  const section = view.stage === 'S3'
+    ? {
+        title: '閱讀後測驗 1／2：同篇立即理解',
+        detail: '以下 10 題都根據剛才閱讀的短文（二）。本階段沒有 AI，也不顯示註解。',
+      }
+    : view.stage === 'S5'
+      ? {
+          title: '閱讀後測驗 2／2：新篇遷移',
+          detail: '這是一篇新的短文，共 12 題，用來了解你能否把剛才的閱讀方式運用到新文章。',
+        }
+      : null;
 
   const submit = async (reason: 'user' | 'timeout' = 'user') => {
     if (submitting.current) return;
@@ -990,6 +1010,12 @@ function Quiz({
   return (
     <div>
       <Timer seconds={view.seconds.max} onTimeout={() => void submit('timeout')} />
+      {section && (
+        <section className="quiz-stage-intro" aria-label={section.title}>
+          <h2>{section.title}</h2>
+          <p>{section.detail}</p>
+        </section>
+      )}
       {view.passage && view.passage.text && <PassageText view={view} token={token} />}
       <hr />
       {(view.items ?? []).map((item, n) => (
@@ -1019,41 +1045,38 @@ function Quiz({
 }
 
 function Scales({ token, onDone }: { token: string; onDone: () => void }) {
-  const [mentalEffort, setMentalEffort] = useState<number | null>(null);
+  const [ratings, setRatings] = useState<Partial<Record<CognitiveLoadItemId, number>>>({});
   const [posting, setPosting] = useState(false);
   const [error, setError] = useState('');
-  const labels = [
-    '非常非常低', '非常低', '低', '稍低', '不低也不高',
-    '稍高', '高', '非常高', '非常非常高',
-  ];
+  const complete = COGNITIVE_LOAD_ITEMS.every(item => ratings[item.id] !== undefined);
   return (
-    <div className="mental-effort-scale">
-      <h3>請回答一個問題</h3>
-      <fieldset>
-        <legend>在剛才閱讀短文（二）時，你投入了多少心智努力？</legend>
-        <p className="scale-hint">請選擇 1 至 9 的一個數字。</p>
-        <div className="scale-options">
-          {labels.map((label, index) => {
-            const value = index + 1;
-            return (
+    <div className="cognitive-load-scale">
+      <h2>剛才閱讀時的感受</h2>
+      <p>請根據剛才閱讀短文（二）時的實際感受，判斷下列敘述與你的情況有多相符。</p>
+      <p className="scale-hint">1＝完全不符合，7＝完全符合。每題都必須選擇一個答案。</p>
+      {COGNITIVE_LOAD_ITEMS.map((item, questionIndex) => (
+        <fieldset key={item.id}>
+          <legend>{questionIndex + 1}. {item.text}</legend>
+          <div className="scale-options">
+            {[1, 2, 3, 4, 5, 6, 7].map(value => (
               <label key={value} className="scale-option">
                 <input
                   type="radio"
-                  name="mentalEffort"
+                  name={item.id}
                   value={value}
-                  checked={mentalEffort === value}
-                  onChange={() => setMentalEffort(value)}
+                  checked={ratings[item.id] === value}
+                  onChange={() => setRatings(current => ({ ...current, [item.id]: value }))}
                   disabled={posting}
                 />
                 <b>{value}</b>
-                <span>{label}</span>
+                <span>{value === 1 ? '完全不符合' : value === 7 ? '完全符合' : ''}</span>
               </label>
-            );
-          })}
-        </div>
-      </fieldset>
+            ))}
+          </div>
+        </fieldset>
+      ))}
       <button
-        disabled={posting || mentalEffort === null}
+        disabled={posting || !complete}
         onClick={async () => {
           if (posting) return;
           setPosting(true); setError('');
@@ -1061,7 +1084,7 @@ function Scales({ token, onDone }: { token: string; onDone: () => void }) {
           const response = await fetch('/api/scale', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ token, mentalEffort }),
+            body: JSON.stringify({ token, ratings }),
           });
           if (!response.ok) { setError('送出失敗，請重試；目前選擇仍保留。'); return; }
           onDone();

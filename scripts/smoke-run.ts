@@ -117,7 +117,7 @@ async function runOne(store: MemoryStore, forcedArm: Arm | null) {
   const afterS2 = (await store.getParticipant(p.id))!;
   if (afterS2.completedTargets.length !== 4) throw new Error('lower bound not recorded');
 
-  // S4 -> S3 -> S5 -> S6 (mental effort is collected immediately after S2)
+  // S4 -> S3 -> S5 -> S6 (cognitive load is collected immediately after S2)
   let stage = afterS2.stage;
   for (const s of ['S3', 'S5'] as const) {
     const items = ITEMS_BY_STAGE[s];

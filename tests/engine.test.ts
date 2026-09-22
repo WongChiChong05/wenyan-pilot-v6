@@ -224,6 +224,30 @@ describe('socratic arm: multiple choice + a required reason on every rung', () =
   });
 });
 
+describe('completion transport', () => {
+  it('does not call the model again when the reader clicks read_done', async () => {
+    let calls = 0;
+    const provider = new MockProvider((system) => {
+      calls += 1;
+      if (system.includes('解說者')) {
+        return JSON.stringify({ type: 'explain', text: '這裡是模型產生的解釋。' });
+      }
+      return JSON.stringify({ verdict: 'accept' });
+    });
+    const store = new MemoryStore();
+    const p = makeParticipant('direct');
+    await store.createParticipant(p);
+    const engine = new Engine(store, provider);
+    const turn = await engine.startAssist(p, '異於常味');
+    expect(turn.kind).toBe('explanation');
+    expect(calls).toBe(1);
+
+    const completed = await engine.reply((await store.getParticipant(p.id))!, { kind: 'read_done' });
+    expect(completed.completed).toBe(true);
+    expect(calls).toBe(1);
+  });
+});
+
 describe('arm symmetry and the control arm', () => {
   it('gives the direct arm the SAME explanation text as the socratic arm', async () => {
     const store = new MemoryStore();

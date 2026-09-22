@@ -39,13 +39,21 @@ export function storeContract(name: string, using: (fn: (store: Store) => Promis
       assert.deepEqual(rows.map(r => r.id), [a.id, b.id]);
       assert.equal(toCsv(rows), toCsv([{ ...a, configVersion: rows[0].configVersion }, { ...b, configVersion: rows[1].configVersion }]));
     }));
-    it('round-trips the Paas 1-9 mental-effort row', () => using(async store => {
+    it('round-trips the differentiated cognitive-load row while omitting legacy fields', () => using(async store => {
       const p = makeParticipant('control'); await store.createParticipant(p);
       await store.addScale({
-        id: randomUUID(), participantId: p.id, mentalEffort: 8, ts: new Date().toISOString(),
+        id: randomUUID(), participantId: p.id,
+        intrinsic1: 6, intrinsic2: 4,
+        germane1: 7, germane2: 6, germane3: 5,
+        extraneous1: 3, extraneous2: 2, extraneous3: 4,
+        intrinsicMean: 5, germaneMean: 6, extraneousMean: 3,
+        ts: new Date().toISOString(),
       });
       const row = (await store.listScales())[0];
-      assert.equal(row.mentalEffort, 8);
+      assert.equal(row.intrinsic1, 6);
+      assert.equal(row.germaneMean, 6);
+      assert.equal(row.extraneousMean, 3);
+      assert.equal(row.mentalEffort, undefined);
       assert.equal(row.load, undefined);
       assert.equal(row.frustration, undefined);
       assert.equal(row.selfEfficacy, undefined);

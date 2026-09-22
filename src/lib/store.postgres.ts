@@ -18,7 +18,13 @@ const fields: Record<Table, string[]> = {
   responses: ['id', 'participantId', 'stage', 'itemId', 'level', 'chosen', 'correct', 'rtMs', 'ts', 'configVersion'],
   interactions: ['id', 'participantId', 'interactionId', 'inTargetSentence', 'granularity', 'highlightText', 'turnIndex', 'actor', 'type', 'text', 'strategy', 'latencyMs', 'rawResponse', 'leakFlags', 'generatedOptions', 'generatedAnswerIndex', 'degraded', 'ts', 'configVersion'],
   events: ['id', 'participantId', 'event', 'payload', 'ts', 'configVersion'],
-  scales: ['id', 'participantId', 'mentalEffort', 'load', 'frustration', 'selfEfficacy', 'ts', 'configVersion'],
+  scales: [
+    'id', 'participantId',
+    'intrinsic1', 'intrinsic2', 'germane1', 'germane2', 'germane3',
+    'extraneous1', 'extraneous2', 'extraneous3',
+    'intrinsicMean', 'germaneMean', 'extraneousMean',
+    'mentalEffort', 'load', 'frustration', 'selfEfficacy', 'ts', 'configVersion',
+  ],
 };
 const jsonFields = new Set(['demographics', 'excludeFlags', 'stageEnteredTs', 'completedTargets', 'active', 'studyConfig', 'leakFlags', 'generatedOptions', 'payload']);
 const column = (key: string) => key.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`);
@@ -30,7 +36,10 @@ function decode<T>(table: Table, row: Record<string, unknown>): T {
     // Omit absent optional fields to preserve the JSON-store export shape.
     if (value == null && [
       'delayedStartedTs', 'studyConfig', 'generatedOptions', 'generatedAnswerIndex', 'degraded',
-      'load', 'frustration', 'selfEfficacy',
+      'intrinsic1', 'intrinsic2', 'germane1', 'germane2', 'germane3',
+      'extraneous1', 'extraneous2', 'extraneous3',
+      'intrinsicMean', 'germaneMean', 'extraneousMean',
+      'mentalEffort', 'load', 'frustration', 'selfEfficacy',
     ].includes(key)) {
       if (key === 'generatedAnswerIndex' && row.degraded !== null) result[key] = null;
       continue;

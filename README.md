@@ -4,7 +4,7 @@
 
 對應設計文件：`claude/實驗設計-Pilot版-十五項決定.md`（v5.2）、`claude/設計與材料-修訂建議v5.md`（v5.1）。
 
-2026-09-21 審閱入口：先讀 [三組提示詞與程式審閱指南](docs/程式與提示詞審閱指南.md)，再讀 [介面測試指南](docs/介面測試指南.md) 與 [Supabase 後端部署與驗證](docs/後端部署與驗證.md)。上述外部設計文件未全部包含於本工作目錄；本 README 的歷史紀錄不應取代現行程式或最新驗證紀錄。
+2026-09-22 審閱入口：先讀 [三組提示詞與程式審閱指南](docs/程式與提示詞審閱指南.md)，再讀 [介面測試指南](docs/介面測試指南.md)、[認知負荷量表](docs/認知負荷量表.md)、[後端資料匯出指南](docs/資料匯出指南.md) 與 [Supabase 後端部署與驗證](docs/後端部署與驗證.md)。上述外部設計文件未全部包含於本工作目錄；本 README 的歷史紀錄不應取代現行程式或最新驗證紀錄。
 
 ---
 
@@ -18,8 +18,8 @@
 | 套件安裝 / `npm run build` / `npm run typecheck` | **已執行通過**；部署追蹤包含驅動，已移除本機私密資料參照 |
 | 瀏覽器互動（選取文字、計時器、UI） | S2 已開啟檢視並修正提交 403；全螢幕切換阻礙完整操作，**未完成全部手動檢查** |
 | LLM 供應商請求格式（Anthropic 與 Gemini）契約測試 | **已執行，6 項通過**（用假的 fetch 驗證送出的 URL、標頭、body 與回應解析） |
-| 真實 API 呼叫（Anthropic / Gemini） | **未執行**。程式用 `fetch` 直打官方端點，請自行以一次真實呼叫確認 |
-| Supabase 後端 | 已實作 `PostgresStore`、交易、`db/schema.sql` 及遷移／匯出工具；PGlite 契約測試通過，**真實 Supabase 尚未連線驗證** |
+| 真實 API 呼叫（Anthropic） | **已在 Vercel dry-run 驗證**；焦點選項、選擇題與解釋均由 Claude 回傳且未降級；Gemini 未驗證 |
+| Supabase 後端 | **已在 Vercel dry-run 驗證**建立參與者、保存測驗、AI 互動及量表並跨請求讀回；正式多人負載仍未驗證 |
 
 新增 `pg` 資料庫驅動與 PGlite 測試環境。教材仍未簽核；工程測試通過不代表可正式收案。自由選取第三層、理由退回次數及指標分母問題列於審閱指南。
 
@@ -453,6 +453,8 @@ grep -rn "CONFIG.llm" src/                                                  # �
 
 五張表：`participants`、`responses`、`interactions`、`events`、`scales`。
 
+逐步操作與欄位說明見 [後端資料匯出指南](docs/資料匯出指南.md)。
+
 ```
 Authorization: Bearer <ADMIN_PASSWORD>
 GET /api/admin/export?table=responses     # CSV
@@ -466,7 +468,7 @@ GET /api/admin/summary                    # 營運摘要，正式分析另核對
 
 ## 7. 已知限制
 
-- 檔案式儲存限單程序開發；正式環境要求 Supabase/PostgreSQL，真實連線與多人負載尚待驗證。
+- 檔案式儲存限單程序開發；Supabase/PostgreSQL 已完成單一 dry-run 流程驗證，正式多人負載仍待驗證。
 - 非目標句前兩層由模型生成，第三層仍為通用固定選項；第三層語義有效性是未解決研究問題。
 - 階段計時與延遲窗口已由伺服器驗證；前端 `rtMs` 仍非真正逐題反應時間。
 - 理由退回次數與規格註解衝突；教材簽核、模型語義、摘要指標及暴露量限制見審閱指南。

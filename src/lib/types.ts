@@ -273,8 +273,21 @@ export interface ScaleRow {
   configVersion?: string;
   id: string;
   participantId: string;
+  /** Klepsch et al. (2017) differentiated cognitive-load questionnaire, 1-7. */
+  intrinsic1?: number;
+  intrinsic2?: number;
+  germane1?: number;
+  germane2?: number;
+  germane3?: number;
+  extraneous1?: number;
+  extraneous2?: number;
+  extraneous3?: number;
+  /** Subscale means are stored separately; the three constructs are not summed. */
+  intrinsicMean?: number;
+  germaneMean?: number;
+  extraneousMean?: number;
   /** Paas (1992) single-item invested mental-effort rating, 1–9. */
-  /** Present for the Paas 1–9 scale introduced in v5.5. Legacy rows omit it. */
+  /** Legacy v5.5 field; new v5.6 rows omit it. */
   mentalEffort?: number;
   /** Legacy fields from the pre-Paas three-item screen; absent on new rows. */
   load?: number;

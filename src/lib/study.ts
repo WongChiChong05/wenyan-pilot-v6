@@ -3,6 +3,7 @@ import { ALL_ITEMS, ITEMS_BY_STAGE } from '../content/items';
 import { LEARNING_PASSAGE, PASSAGES } from '../content/passages';
 import { ApiError, delayedFlag, insist, object, string, token } from './api';
 import { CONFIG } from './config';
+import { cognitiveLoadMeans, validCognitiveLoadRatings, type CognitiveLoadRatings } from './cognitiveLoad';
 import { validateContent } from './contentValidation';
 import { Engine, nextStage, pendingTurnFor, stageLimits } from './engine';
 import { lowerBoundApplies, lowerBoundMet } from './highlight';
@@ -208,14 +209,13 @@ export async function recordEvent(store: Store, body: Body) {
 export async function submitScale(store: Store, body: Body) {
   const { p, delayed } = await participant(store, body);
   insist(!delayed && p.stage === 'S4', 'stage mismatch', 409);
-  insist(
-    Number.isInteger(body.mentalEffort) && Number(body.mentalEffort) >= 1 && Number(body.mentalEffort) <= 9,
-    'mental effort must be an integer 1-9'
-  );
+  insist(validCognitiveLoadRatings(body.ratings), 'all cognitive-load ratings must be integers 1-7');
+  const ratings = body.ratings as CognitiveLoadRatings;
   await store.addScale({
     id: randomUUID(),
     participantId: p.id,
-    mentalEffort: body.mentalEffort as number,
+    ...ratings,
+    ...cognitiveLoadMeans(ratings),
     ts: iso(),
   });
   await addEvent(store, p.id, 'stage_leave', { stage: p.stage, elapsedSeconds: elapsedSeconds(p), reason: 'user' });

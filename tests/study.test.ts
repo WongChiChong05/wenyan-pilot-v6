@@ -49,14 +49,24 @@ describe('server-side study boundary', () => {
     const response = await api(() => bodyOf(new Request('http://localhost/api/session', { method: 'POST', body: '{broken' })));
     assert.equal(response.status, 400); assert.equal((await store.listEvents()).length, 0);
   });
-  it('stores only the Paas 1-9 mental-effort response at S4', async () => {
+  it('requires all eight 1-7 cognitive-load ratings and stores three subscale means at S4', async () => {
     const store = new MemoryStore(); const p = makeParticipant('control'); p.stage = 'S4';
     p.stageEnteredTs.S4 = new Date().toISOString();
     await store.createParticipant(p);
-    await assert.rejects(submitScale(store, { token: p.token, mentalEffort: 0 }));
-    await assert.rejects(submitScale(store, { token: p.token, mentalEffort: 10 }));
-    await submitScale(store, { token: p.token, mentalEffort: 7 });
-    assert.equal((await store.listScales())[0].mentalEffort, 7);
+    const ratings = {
+      intrinsic1: 6, intrinsic2: 4,
+      germane1: 7, germane2: 6, germane3: 5,
+      extraneous1: 3, extraneous2: 2, extraneous3: 4,
+    };
+    await assert.rejects(submitScale(store, { token: p.token, ratings: { ...ratings, intrinsic1: 0 } }));
+    await assert.rejects(submitScale(store, { token: p.token, ratings: { ...ratings, extraneous3: 8 } }));
+    await assert.rejects(submitScale(store, { token: p.token, ratings: { intrinsic1: 4 } }));
+    await submitScale(store, { token: p.token, ratings });
+    const row = (await store.listScales())[0];
+    assert.equal(row.intrinsicMean, 5);
+    assert.equal(row.germaneMean, 6);
+    assert.equal(row.extraneousMean, 3);
+    assert.equal(row.mentalEffort, undefined);
     assert.equal((await store.getParticipant(p.id))?.stage, 'S3');
   });
   it('accepts the browser-facing host but rejects a foreign origin', async () => {
