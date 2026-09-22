@@ -17,6 +17,7 @@ describe('server-side study boundary', () => {
   it('enforces S6 token, window, and start on submission as well as viewing', async () => {
     const store = new MemoryStore(); const p = makeParticipant('control'); p.stage = 'S6';
     p.stageEnteredTs.S6 = new Date().toISOString(); await store.createParticipant(p);
+    await store.createContact({ participantId: p.id, email: 'reader@example.com', createdTs: new Date().toISOString() });
     const submission = { token: p.delayedToken, delayed: true, stage: 'S6', answers: [] };
     await assert.rejects(submitQuiz(store, submission));
     await store.updateParticipant(p.id, { stageEnteredTs: { S6: new Date(Date.now() - 25 * 3600000).toISOString() } });
@@ -26,7 +27,24 @@ describe('server-side study boundary', () => {
     assert.equal(view.stage, 'S6'); assert.equal(view.seconds.max, CONFIG.stageSeconds.S6.max);
     await submitQuiz(store, submission);
     assert.equal((await store.getParticipant(p.id))?.stage, 'DONE');
+    assert.equal((await store.listContacts())[0].email, null);
+    assert.ok((await store.listContacts())[0].emailDeletedTs);
     assert.equal((await readState(store, p.delayedToken, true)).stage, 'DONE');
+  });
+  it('requires demographics and stores email outside participant research data', async () => {
+    const missing = { consent: true, chineseMajor: false, readBefore: false, aiUsage: '每週數次' };
+    await assert.rejects(createSession(new MemoryStore(), missing));
+    const store = new MemoryStore();
+    const result = await createSession(store, {
+      ...missing, age: 20, gender: '不願透露', major: '資訊工程', email: 'Student@Example.com', grade: '二年級',
+    });
+    assert.ok(result.token);
+    const p = (await store.listParticipants())[0];
+    assert.equal(p.demographics.age, 20);
+    assert.equal(p.demographics.gender, '不願透露');
+    assert.equal(p.demographics.major, '資訊工程');
+    assert.equal(p.demographics.email, undefined);
+    assert.equal((await store.listContacts())[0].email, 'student@example.com');
   });
   it('refuses expired delayed submissions without deleting the participant', async () => {
     const store = new MemoryStore(); const p = makeParticipant('control'); p.stage = 'S6';

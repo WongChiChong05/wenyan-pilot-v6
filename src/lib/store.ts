@@ -9,6 +9,7 @@ import type {
   Participant,
   ResponseRow,
   ScaleRow,
+  ParticipantContact,
 } from './types';
 
 export interface Store {
@@ -27,6 +28,9 @@ export interface Store {
   listEvents(): Promise<EventRow[]>;
   addScale(row: ScaleRow): Promise<void>;
   listScales(): Promise<ScaleRow[]>;
+  createContact(row: ParticipantContact): Promise<void>;
+  listContacts(): Promise<ParticipantContact[]>;
+  updateContact(participantId: string, patch: Partial<ParticipantContact>): Promise<ParticipantContact>;
 }
 
 /**
@@ -45,6 +49,7 @@ export class JsonStore implements Store {
     try {
       const buf = await fs.readFile(this.file, 'utf8');
       const db = JSON.parse(buf) as Db;
+      if (db && !Array.isArray(db.contacts)) db.contacts = [];
       if (!db || Object.keys(emptyDb()).some(key => !Array.isArray(db[key as keyof Db]))) {
         throw new Error('invalid database shape');
       }
@@ -130,6 +135,15 @@ export class JsonStore implements Store {
   }
   async listScales() {
     return (await this.read()).scales;
+  }
+  createContact(row: ParticipantContact) {
+    return this.transaction(store => store.createContact(row));
+  }
+  async listContacts() {
+    return (await this.read()).contacts;
+  }
+  updateContact(participantId: string, patch: Partial<ParticipantContact>) {
+    return this.transaction(store => store.updateContact(participantId, patch));
   }
 }
 

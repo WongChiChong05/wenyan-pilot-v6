@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import type { Pool } from 'pg';
 import { CONFIG } from './config';
 import type { Store } from './store';
-import type { EventRow, InteractionRow, Participant, ResponseRow, ScaleRow } from './types';
+import type { EventRow, InteractionRow, Participant, ParticipantContact, ResponseRow, ScaleRow } from './types';
 
 export interface SqlConnection {
   query(sql: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
@@ -11,7 +11,7 @@ export interface SqlPool extends SqlConnection {
   connect(): Promise<SqlConnection & { release(): void }>;
   end(): Promise<void>;
 }
-type Table = 'participants' | 'responses' | 'interactions' | 'events' | 'scales';
+type Table = 'participants' | 'responses' | 'interactions' | 'events' | 'scales' | 'participant_contacts';
 // Identifiers originate only from this allowlist, never from a request.
 const fields: Record<Table, string[]> = {
   participants: ['id', 'token', 'delayedToken', 'arm', 'stage', 'stratum', 'pretestScore', 'consentTs', 'demographics', 'excludeFlags', 'stageEnteredTs', 'completedTargets', 'active', 'delayedStartedTs', 'studyConfig', 'configVersion'],
@@ -25,6 +25,7 @@ const fields: Record<Table, string[]> = {
     'intrinsicMean', 'germaneMean', 'extraneousMean',
     'mentalEffort', 'load', 'frustration', 'selfEfficacy', 'ts', 'configVersion',
   ],
+  participant_contacts: ['participantId', 'email', 'createdTs', 'emailSentTs', 'emailDeletedTs', 'configVersion'],
 };
 const jsonFields = new Set(['demographics', 'excludeFlags', 'stageEnteredTs', 'completedTargets', 'active', 'studyConfig', 'leakFlags', 'generatedOptions', 'payload']);
 const column = (key: string) => key.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`);
@@ -40,6 +41,7 @@ function decode<T>(table: Table, row: Record<string, unknown>): T {
       'extraneous1', 'extraneous2', 'extraneous3',
       'intrinsicMean', 'germaneMean', 'extraneousMean',
       'mentalEffort', 'load', 'frustration', 'selfEfficacy',
+      'emailSentTs', 'emailDeletedTs',
     ].includes(key)) {
       if (key === 'generatedAnswerIndex' && row.degraded !== null) result[key] = null;
       continue;
@@ -138,4 +140,21 @@ export class PostgresStore implements Store {
   listEvents() { return this.list<EventRow>('events'); }
   addScale(row: ScaleRow) { return this.insert('scales', row); }
   listScales() { return this.list<ScaleRow>('scales'); }
+  createContact(row: ParticipantContact) { return this.insert('participant_contacts', row); }
+  listContacts() { return this.list<ParticipantContact>('participant_contacts'); }
+  async updateContact(participantId: string, patch: Partial<ParticipantContact>): Promise<ParticipantContact> {
+    const keys = fields.participant_contacts.filter(k => k !== 'participantId' && Object.prototype.hasOwnProperty.call(patch, k));
+    if (!keys.length) {
+      const rows = await this.connection.query('SELECT * FROM wenyan.participant_contacts WHERE participant_id = $1', [participantId]);
+      if (!rows.rows[0]) throw new Error('contact not found');
+      return decode('participant_contacts', rows.rows[0]);
+    }
+    const row = patch as Record<string, unknown>;
+    const result = await this.connection.query(
+      `UPDATE wenyan.participant_contacts SET ${keys.map((key, i) => `${column(key)} = $${i + 2}`).join(', ')} WHERE participant_id = $1 RETURNING *`,
+      [participantId, ...keys.map(k => encode(k, row[k]))]
+    );
+    if (!result.rows[0]) throw new Error('contact not found');
+    return decode('participant_contacts', result.rows[0]);
+  }
 }

@@ -194,6 +194,17 @@ export interface Participant {
   active: ActiveInteraction | null;
 }
 
+/** Direct identifier kept outside the research participant row. */
+export interface ParticipantContact {
+  configVersion?: string;
+  participantId: string;
+  /** Null after the delayed-test window closes or the delayed test is completed. */
+  email: string | null;
+  createdTs: string;
+  emailSentTs?: string;
+  emailDeletedTs?: string;
+}
+
 export interface ActiveInteraction {
   interactionId: string;
   targetId: string | null;

@@ -260,7 +260,7 @@ OFFLINE VERIFICATION: OK
 | 15 | 逾時不刪人，只標記（ITT） | `src/app/api/advance/route.ts` | 讀該檔；`excludeFlags` 只加標記，不刪資料 |
 | 16 | 分頁切換超過 3 次標記 | `src/app/api/event/route.ts` | 同上 |
 | 16b | 作答階段全螢幕、離開會被記錄（**只嚇阻與記錄，不是強制**） | `src/lib/config.ts: proctor`、`run/page.tsx: useProctor`／`FullscreenGate` | 讀該檔；`visibility_change` 與 `fullscreen_exit` 共用同一個排除門檻 |
-| 17 | 延遲測驗只能用專屬連結，且不寄信 | `src/app/api/state/route.ts`（主 token 在 S6 只給連結） | 讀該檔 |
+| 17 | 延遲測驗只能用專屬連結；電郵另表保存，只供人工寄送並於完成或逾期後清除 | `src/app/api/state/route.ts`、`participant_contacts`、`api/admin/export?table=contact-reminders` | 讀該檔及 migration 003 |
 | 18 | 只有正文可以 highlight | CSS：`src/app/globals.css` 的 `.passage-body`；**保證**：`src/lib/engine.ts: startAssist` 檢查選取字串是否為正文子字串 | `engine.test.ts > only the passage body can be highlighted` |
 | 19 | 一次只能開一個互動（鎖定），換句要手動解鎖 | 伺服器：`src/app/api/assist/route.ts` 對進行中的互動回 409；前端：`run/page.tsx` 的 `LockState` | 讀該檔；`assist/route.ts` 的守衛在 `startAssist` 之前 |
 | 20 | 重新整理不能把讀者鎖死 | `src/lib/engine.ts: pendingTurnFor` + `src/app/api/state/route.ts` | `engine.test.ts > reload recovery` |
@@ -451,7 +451,7 @@ grep -rn "CONFIG.llm" src/                                                  # �
 
 ## 6. 資料與匯出
 
-五張表：`participants`、`responses`、`interactions`、`events`、`scales`。
+五張研究表：`participants`、`responses`、`interactions`、`events`、`scales`。直接識別資料另存於 `participant_contacts`；分析用一人一列檔由 `api/admin/export?table=wide` 產生。
 
 逐步操作與欄位說明見 [後端資料匯出指南](docs/資料匯出指南.md)。
 

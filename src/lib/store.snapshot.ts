@@ -1,6 +1,6 @@
 import { CONFIG } from './config';
 import type { Store } from './store';
-import type { EventRow, InteractionRow, Participant, ResponseRow, ScaleRow } from './types';
+import type { EventRow, InteractionRow, Participant, ParticipantContact, ResponseRow, ScaleRow } from './types';
 
 export interface Db {
   participants: Participant[];
@@ -8,8 +8,9 @@ export interface Db {
   interactions: InteractionRow[];
   events: EventRow[];
   scales: ScaleRow[];
+  contacts: ParticipantContact[];
 }
-export const emptyDb = (): Db => ({ participants: [], responses: [], interactions: [], events: [], scales: [] });
+export const emptyDb = (): Db => ({ participants: [], responses: [], interactions: [], events: [], scales: [], contacts: [] });
 const copy = <T>(value: T): T => structuredClone(value);
 const stamped = <T extends { configVersion?: string }>(value: T): T =>
   ({ ...copy(value), configVersion: value.configVersion ?? CONFIG.version });
@@ -57,4 +58,15 @@ export class SnapshotStore implements Store {
     this.db.scales.push(stamped(row));
   }
   async listScales() { return copy(this.db.scales); }
+  async createContact(row: ParticipantContact) {
+    if (this.db.contacts.some(contact => contact.participantId === row.participantId)) throw new Error('duplicate contact');
+    this.db.contacts.push(stamped(row));
+  }
+  async listContacts() { return copy(this.db.contacts); }
+  async updateContact(participantId: string, patch: Partial<ParticipantContact>) {
+    const i = this.db.contacts.findIndex(contact => contact.participantId === participantId);
+    if (i < 0) throw new Error('contact not found');
+    this.db.contacts[i] = { ...this.db.contacts[i], ...copy(patch), participantId };
+    return copy(this.db.contacts[i]);
+  }
 }

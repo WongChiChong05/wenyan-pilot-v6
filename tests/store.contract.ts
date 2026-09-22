@@ -58,6 +58,19 @@ export function storeContract(name: string, using: (fn: (store: Store) => Promis
       assert.equal(row.frustration, undefined);
       assert.equal(row.selfEfficacy, undefined);
     }));
+    it('keeps contact data separate and records sending and deletion', () => using(async store => {
+      const p = makeParticipant('control'); await store.createParticipant(p);
+      await store.createContact({ participantId: p.id, email: 'reader@example.com', createdTs: new Date().toISOString() });
+      assert.equal((await store.listContacts())[0].email, 'reader@example.com');
+      const sent = new Date().toISOString();
+      await store.updateContact(p.id, { emailSentTs: sent });
+      assert.equal((await store.listContacts())[0].emailSentTs, sent);
+      const deleted = new Date().toISOString();
+      await store.updateContact(p.id, { email: null, emailDeletedTs: deleted });
+      const contact = (await store.listContacts())[0];
+      assert.equal(contact.email, null);
+      assert.equal(contact.emailDeletedTs, deleted);
+    }));
     it('rejects duplicate responses without keeping a partial batch', () => using(async store => {
       const p = makeParticipant('control'); await store.createParticipant(p);
       const row = { id: randomUUID(), participantId: p.id, stage: 'S1' as const, itemId: 'S1-01', level: 'decode' as const, chosen: 1, correct: false, rtMs: 3000, ts: new Date().toISOString() };

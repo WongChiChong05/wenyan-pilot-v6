@@ -10,6 +10,7 @@ storeContract('PostgresStore (PGlite)', async fn => {
   const db = new PGlite();
   await db.exec(await readFile('db/schema.sql', 'utf8'));
   await db.exec(await readFile('db/migrations/002_differentiated_cognitive_load.sql', 'utf8'));
+  await db.exec(await readFile('db/migrations/003_participant_contacts.sql', 'utf8'));
   let queue = Promise.resolve();
   const query: SqlConnection['query'] = async (sql, values) => db.query(sql, values);
   const pool: SqlPool = {
@@ -46,6 +47,7 @@ if (process.env.TEST_DATABASE_URL) {
     try {
       await isolated.query(await readFile('db/schema.sql', 'utf8'));
       await isolated.query(await readFile('db/migrations/002_differentiated_cognitive_load.sql', 'utf8'));
+      await isolated.query(await readFile('db/migrations/003_participant_contacts.sql', 'utf8'));
       await fn(new PostgresStore(isolated));
     } finally {
       try { await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); }

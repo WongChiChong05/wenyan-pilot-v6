@@ -16,6 +16,17 @@ import { buildStageView } from './view';
 type Body = Record<string, unknown>;
 const iso = () => new Date().toISOString();
 const quizStage = (value: unknown): value is keyof typeof ITEMS_BY_STAGE => typeof value === 'string' && Object.hasOwn(ITEMS_BY_STAGE, value);
+const GENDERS = ['男性', '女性', '非二元／其他', '不願透露'] as const;
+const requiredString = (value: unknown, name: string, max: number) => {
+  const result = string(value, name, max).trim();
+  insist(result.length > 0, `${name} required`);
+  return result;
+};
+const normaliseEmail = (value: unknown) => {
+  const result = requiredString(value, 'email', 254).toLowerCase();
+  insist(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(result), 'invalid email');
+  return result;
+};
 const addEvent = (store: Store, id: string, event: EventRow['event'], payload: Record<string, unknown>) =>
   store.addEvent({ id: randomUUID(), participantId: id, event, payload, ts: iso() });
 
@@ -55,6 +66,10 @@ async function enter(store: Store, p: Participant, patch: Partial<Participant> =
 export async function createSession(store: Store, body: Body) {
   insist(body.consent === true, 'consent required');
   insist(typeof body.chineseMajor === 'boolean' && typeof body.readBefore === 'boolean', 'screening answers required');
+  insist(Number.isInteger(body.age) && Number(body.age) >= 16 && Number(body.age) <= 80, 'age must be an integer 16-80');
+  insist(typeof body.gender === 'string' && GENDERS.includes(body.gender as typeof GENDERS[number]), 'invalid gender');
+  const major = requiredString(body.major, 'major', 200);
+  const email = normaliseEmail(body.email);
   const mode = process.env.STUDY_MODE ?? (process.env.NODE_ENV === 'production' ? '' : 'dry-run');
   insist(mode === 'dry-run' || mode === 'collection', 'STUDY_MODE must be set', 503);
   if (mode === 'collection') {
@@ -66,12 +81,21 @@ export async function createSession(store: Store, body: Body) {
   const p: Participant = {
     id: randomUUID(), token: randomUUID(), delayedToken: randomUUID(), arm: 'control', stage: 'S1', stratum: null, pretestScore: null,
     consentTs: now,
-    demographics: { grade: string(body.grade ?? '', 'grade', 200), department: string(body.department ?? '', 'department', 200), aiUsage: string(body.aiUsage ?? '', 'aiUsage', 200), chineseMajor: body.chineseMajor, readBefore: body.readBefore },
+    demographics: {
+      age: body.age as number,
+      gender: body.gender as string,
+      major,
+      grade: string(body.grade ?? '', 'grade', 200).trim(),
+      aiUsage: requiredString(body.aiUsage, 'aiUsage', 200),
+      chineseMajor: body.chineseMajor,
+      readBefore: body.readBefore,
+    },
     excludeFlags: [...(body.chineseMajor ? ['chinese_major'] : []), ...(body.readBefore ? ['read_before'] : [])],
     stageEnteredTs: { S0: now, S1: now }, completedTargets: [], active: null,
     studyConfig: { mode, config: CONFIG, provider: process.env.LLM_PROVIDER ?? 'auto/mock', stratumLow: Number(process.env.STRATUM_LOW ?? 3), stratumHigh: Number(process.env.STRATUM_HIGH ?? 6) },
   };
   await store.createParticipant(p);
+  await store.createContact({ participantId: p.id, email, createdTs: now });
   await addEvent(store, p.id, 'stage_enter', { stage: 'S1' });
   return { token: p.token, eligible: p.excludeFlags.length === 0 };
 }
@@ -115,6 +139,10 @@ export async function submitQuiz(store: Store, body: Body) {
   if (elapsed < limits.min) flags.push(`below_min_time_${p.stage}`);
   if (timedOut) flags.push(`timeout_${p.stage}`);
   for (const row of scored.rows.filter(r => r.chosen === null)) await addEvent(store, p.id, 'item_skip', { stage: p.stage, itemId: row.itemId });
+  if (p.stage === 'S6') {
+    const contact = (await store.listContacts()).find(row => row.participantId === p.id);
+    if (contact?.email) await store.updateContact(p.id, { email: null, emailDeletedTs: now });
+  }
   const patch: Partial<Participant> = { excludeFlags: [...new Set(flags)] };
   if (p.stage === 'S1') {
     const cuts = { low: Number(process.env.STRATUM_LOW ?? 3), high: Number(process.env.STRATUM_HIGH ?? 6) };
