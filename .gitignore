@@ -7,3 +7,5 @@ backups/
 tmp/
 .env.*.local
 *.tsbuildinfo
+
+.vercel
