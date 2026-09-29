@@ -9,7 +9,7 @@
  * test are removed; training is three passages.
  */
 export const CONFIG = {
-  version: 'v6.0',
+  version: 'v6.1',
 
   /**
    * Stage time limits in seconds. Upper bound auto-advances; lower bound flags.

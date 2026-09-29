@@ -76,6 +76,17 @@ export function ruleCheckReason(
     return { verdict: 'accept', rule: 'quotes_text' };
   }
 
+  // v6.1: names two or more different characters from ANYWHERE in the passage -> accept.
+  // The v6 rungs ask for clues outside the selected sentence (「這句的主語在前文：是誰？」),
+  // so a reason like 「2 person, 石和王」 points at the right evidence but shares no character
+  // with the sentence itself; it used to fall through to the model and, in dev mode, be
+  // rejected. Two distinct characters keep a lone common particle (之、而) from counting.
+  if (context.passageText) {
+    const passageChars = new Set(context.passageText.replace(/[^\u3400-\u9fff]/gu, '').split(''));
+    const named = new Set([...stripped].filter((c) => passageChars.has(c)));
+    if (named.size >= 2) return { verdict: 'accept', rule: 'quotes_passage' };
+  }
+
   if (CONNECTIVES.some((c) => text.includes(c))) {
     return { verdict: 'accept', rule: 'causal_connective' };
   }

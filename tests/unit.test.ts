@@ -293,6 +293,19 @@ describe('reason gate rules', () => {
     expect(ruleCheckReason('嗯', p).verdict).toBe('reject');
     expect(ruleCheckReason('人多', p).verdict).toBe('reject');
   });
+  it('accepts a reason naming two passage characters outside the sentence (v6.1)', () => {
+    const p = { sentenceText: '並窮綺麗，以飾輿服', optionTexts: [], passageText: '石崇與王愷爭豪，並窮綺麗，以飾輿服。' };
+    expect(ruleCheckReason('2 person, 石和王', p)).toEqual({ verdict: 'accept', rule: 'quotes_passage' });
+    // one shared character is not enough, and blank phrases still fail first
+    expect(ruleCheckReason('two people 石', p).verdict).toBe('undecided');
+    expect(ruleCheckReason('不知道啦', p).verdict).toBe('reject');
+  });
+  it('the dev mock accepts reasons the rules leave to the model (v6.1)', async () => {
+    const { getProvider } = await import('../src/lib/llm');
+    const { system, user } = reasonJudgePrompt({ reason: 'since he has a lot of servants', sentence: '婢子百餘人', options: [] });
+    const res = await getProvider().complete(system, user);
+    expect(res.text).toContain('"accept"');
+  });
   it('leaves a non-Chinese reason to the model instead of rejecting it', () => {
     expect(ruleCheckReason('since he has a lot of servants', ctx).verdict).toBe('undecided');
   });

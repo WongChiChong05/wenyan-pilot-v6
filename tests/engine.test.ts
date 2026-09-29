@@ -8,7 +8,7 @@ import { MemoryStore, makeParticipant } from './memoryStore';
 const TARGET = LEARNING_PASSAGE.targets[0];
 const question = '對照選取文字與前後文，你看到哪些可以互相檢查的線索？';
 const chatty = new MockProvider((system) => {
-  if (system.includes('判斷一段中文回答')) return JSON.stringify({ verdict: 'accept' });
+  if (system.includes('有沒有說明他為什麼得出自己的答案') || system.includes('判斷一段中文回答')) return JSON.stringify({ verdict: 'accept' });
   if (system.includes('解說者')) return JSON.stringify({ type: 'explain', text: '這裡是解釋。' });
   return JSON.stringify({ type: 'question', text: question });
 });
@@ -278,7 +278,7 @@ describe('v5.9 perspective step and strategy removal', () => {
     const prompts: string[] = [];
     const llm = new MockProvider((system, user) => {
       prompts.push(user);
-      if (system.includes('判斷一段中文回答')) return JSON.stringify({ verdict: 'accept' });
+      if (system.includes('有沒有說明他為什麼得出自己的答案') || system.includes('判斷一段中文回答')) return JSON.stringify({ verdict: 'accept' });
       return JSON.stringify({ type: 'question', text: question });
     });
     const store = new MemoryStore(); const engine = new Engine(store, llm);
@@ -335,7 +335,7 @@ describe('v5.9 perspective step and strategy removal', () => {
     const systems: string[] = [];
     const llm = new MockProvider((system) => {
       systems.push(system);
-      if (system.includes('判斷一段中文回答')) return JSON.stringify({ verdict: 'accept' });
+      if (system.includes('有沒有說明他為什麼得出自己的答案') || system.includes('判斷一段中文回答')) return JSON.stringify({ verdict: 'accept' });
       if (system.includes('解說者')) return JSON.stringify({ type: 'explain', text: '這裡是解釋。' });
       return JSON.stringify({ type: 'question', strategy: 'B', text: question });
     });

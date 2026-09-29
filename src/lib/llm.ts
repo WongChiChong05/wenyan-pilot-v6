@@ -188,7 +188,12 @@ export function getProvider(): LlmProvider {
   // run without a key by mistake, that string lands in the data where it cannot be
   // mistaken for real content.
   return new MockProvider((system, user) => {
-    if (system.includes('判斷一段中文回答')) return JSON.stringify({ verdict: 'accept' });
+    // Reason judge (P4). Matches both the v5.11 wording and the older one: when the marker
+    // went stale in v5.11, every reason the rules left undecided fell through to the MCQ
+    // shape, failed to parse, and was REJECTED — dev runs looked far harsher than a real run.
+    if (system.includes('有沒有說明他為什麼得出自己的答案') || system.includes('判斷一段中文回答')) {
+      return JSON.stringify({ verdict: 'accept', why: '示範模式' });
+    }
     // v6 offline grader dry run: scores nothing, so a mock-graded file is obviously fake.
     if (system.includes('文言文翻譯的評分員')) {
       return JSON.stringify({ A: { score: 0, evidence: '示範模式' }, B: { score: 0, evidence: '示範模式' }, C: { score: 0, evidence: '示範模式' } });

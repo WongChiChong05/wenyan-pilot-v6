@@ -68,7 +68,7 @@ awkward code. They are awkward on purpose.
 ## Verify before you claim anything works
 
 ```bash
-npm test                  # vitest (v6.0: 145 tests)
+npm test                  # vitest (v6.1: 147 tests)
 npm run typecheck         # tsc --noEmit
 npm run validate:content  # exits 1 by design while content is unsigned
 npm run smoke             # offline end-to-end through the study services, S1 -> DONE
