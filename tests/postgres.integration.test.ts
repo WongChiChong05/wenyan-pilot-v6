@@ -1,8 +1,14 @@
+import { vi } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { PostgresStore, type SqlConnection, type SqlPool } from '../src/lib/store.postgres';
 import { storeContract } from './store.contract';
+
+// Every case builds a fresh database and applies all migrations; the first also pays the
+// PGlite WASM cold start (~6 s on a 4-core machine). The 5 s default is too tight for that.
+// File-scoped so the JsonStore contract keeps the default.
+vi.setConfig({ testTimeout: 30_000 });
 
 // PGlite executes the actual SQL/schema, but has one connection. It does NOT prove
 // cross-connection locking; use TEST_DATABASE_URL for that contract in a dedicated DB.
