@@ -39,7 +39,7 @@ export interface TargetSentence {
   languagePoint: string; // e.g. 之＝代詞
   /** Pre-written, identical for both AI arms (design rule: explanation parity). */
   explanation: string;
-  /** Layer-3 multiple choice presented by the socratic arm. */
+  /** Legacy multiple choice retained for interactions started before v5.8. */
   choice: {
     prompt: string;
     options: string[];
@@ -51,18 +51,8 @@ export interface TargetSentence {
   layer1: string;
   layer2: string;
   /**
-   * Layer-1 and layer-2 answer options.
-   *
-   * Every layer of a TARGET sentence is a multiple choice plus a required reason.
-   * The reader never faces a blank box asking "what is the answer" — only "why did you
-   * pick that". Recognition for the what, production for the why.
-   *
-   * These two layers ask about OBSERVATIONS (what part of speech sits next to the word,
-   * what the phrase is doing), never about the meaning itself, so they cannot give away
-   * the layer-3 answer.
-   *
-   * Free (non-target) highlights have no pre-written options and keep the model-generated
-   * open question at layers 1-2: generated options cannot be quality-checked at run time.
+   * Legacy answer options for interactions started before v5.8. New interactions
+   * use layer1/layer2 as open questions and never send these options to the reader.
    */
   layer1Choice?: { options: string[]; answerIndex: number };
   layer2Choice?: { options: string[]; answerIndex: number };
@@ -126,6 +116,7 @@ export interface LadderState {
 
 export type InteractionType =
   | 'focus' // reader chooses the exact word/character inside a multi-word highlight
+  | 'perspective' // v5.9: reader types what they want to understand (both AI arms)
   | 'question' // socratic layer 1/2 question
   | 'probe' // "你怎麼判斷的"
   | 'choice' // layer 3 multiple choice
@@ -145,12 +136,14 @@ export interface InteractionRow {
   actor: 'system' | 'user';
   type: InteractionType;
   text: string;
+  /** Legacy column (v5.2–v5.8 model self-report). Always null from v5.9; kept so old rows import. */
   strategy: 'A' | 'B' | 'C' | 'D' | null;
   latencyMs: number | null;
   rawResponse: string | null;
   leakFlags: string[];
   /**
-   * Task-A audit trail for FREE-highlight generated MCQs at layers 1/2.
+   * Legacy Task-A audit trail for FREE-highlight generated MCQs at layers 1/2.
+   * v5.8 open questions do not populate generatedOptions or generatedAnswerIndex.
    *
    * Task-A gives up run-time validation of the "is this option itself the answer"
    * question (structural checks + option-level leak-check catch the obvious cases,
@@ -207,6 +200,10 @@ export interface ParticipantContact {
 
 export interface ActiveInteraction {
   interactionId: string;
+  /** Open answer plus reason. Missing on interactions created before v5.8. */
+  answerMode?: 'open';
+  /** Exact question to restore after a reload or an insufficient reason. */
+  pendingQuestion?: string;
   targetId: string | null;
   selection: string;
   /** Character offsets of `selection` inside the learning passage. Used by the
@@ -223,7 +220,15 @@ export interface ActiveInteraction {
   focusEnd?: number;
   focusOptions?: string[];
   focusPending?: boolean;
-  focusSource?: 'suggestion' | 'other';
+  focusSource?: 'suggestion' | 'other' | 'question';
+  /**
+   * v5.9, free highlights in both AI arms: what the reader typed they want to understand.
+   * An empty entry stores DEFAULT_PERSPECTIVE with source 'default' (guide towards meaning).
+   * Target sentences never ask: their ladder and explanation are fixed for parity.
+   */
+  perspective?: string;
+  perspectiveSource?: 'typed' | 'default';
+  perspectivePending?: boolean;
   turnIndex: number;
   ladder: LadderState;
   startedTs: string;
@@ -272,6 +277,8 @@ export interface EventRow {
     | 'duplicate_submission'
     | 'reason_judgement'
     | 'focus_selected'
+    | 'perspective_set'
+    | 'selection_cancelled'
     // proctoring: recorded, never enforced
     | 'fullscreen_enter'
     | 'fullscreen_exit'

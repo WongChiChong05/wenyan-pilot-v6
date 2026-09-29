@@ -13,6 +13,7 @@ import {
   PRETEST_PASSAGE,
   TRANSFER_PASSAGE,
 } from '../content/passages';
+import { checkSocraticOutput } from './leak';
 
 export function validateContent() {
 const errors: string[] = [];
@@ -149,16 +150,16 @@ for (const t of LEARNING_PASSAGE.targets) {
   });
   if (t.acceptableAnswers.length === 0) errors.push(`target ${t.id}: no acceptable answers listed`);
 
-  // Every rung of a target sentence must be a multiple choice: the reader never faces a
-  // blank box asking what the answer is, only why they picked it.
+  // v5.8: the displayed first two rungs are open questions. Choice specs remain
+  // optional solely for interactions saved under the earlier MCQ protocol.
   for (const [layer, spec, prompt] of [
     [1, t.layer1Choice, t.layer1],
     [2, t.layer2Choice, t.layer2],
   ] as const) {
-    if (!spec) {
-      errors.push(`target ${t.id}: layer ${layer} has no options (it would fall back to a text box)`);
-      continue;
-    }
+    if (prompt.trim().length === 0) errors.push(`target ${t.id}: layer ${layer} has no prompt`);
+    const report = checkSocraticOutput(prompt);
+    if (!report.ok) errors.push(`target ${t.id}: layer ${layer} question leaks (${report.flags.join(', ')})`);
+    if (!spec) continue;
     if (spec.options.length < 2) errors.push(`target ${t.id}: layer ${layer} needs at least 2 options`);
     if (new Set(spec.options).size !== spec.options.length) {
       errors.push(`target ${t.id}: layer ${layer} has duplicate options`);
@@ -166,7 +167,6 @@ for (const t of LEARNING_PASSAGE.targets) {
     if (spec.answerIndex < 0 || spec.answerIndex >= spec.options.length) {
       errors.push(`target ${t.id}: layer ${layer} answerIndex out of range`);
     }
-    if (prompt.trim().length === 0) errors.push(`target ${t.id}: layer ${layer} has no prompt`);
     // A rung that repeats the bottom-out options would hand over the answer early.
     if (spec.options.join('|') === t.choice.options.join('|')) {
       errors.push(`target ${t.id}: layer ${layer} options are identical to the layer-3 answer options`);

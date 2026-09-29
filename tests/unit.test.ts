@@ -20,7 +20,7 @@ import {
 import { assignArm, mulberry32, stratumOf } from '../src/lib/randomize';
 import { ruleCheckReason, shouldForceAccept } from '../src/lib/reasonGate';
 import { cohensKappa, cronbachAlpha, itemStats, scoreQuiz } from '../src/lib/scoring';
-import { socraticSystemPrompt, socraticTurnPrompt } from '../src/lib/prompts';
+import { openFinalQuestion, reasonJudgePrompt, socraticOpenSystemPrompt, socraticSystemPrompt, socraticTurnPrompt } from '../src/lib/prompts';
 import { LEARNING_PASSAGE } from '../src/content/passages';
 import type { Item } from '../src/lib/types';
 import { fallbackFocusOptions, focusOccursInSelection, validateFocusOptions } from '../src/lib/focus';
@@ -87,7 +87,8 @@ describe('sentenceRanges + neighborhoodOf (Task-B prompt context)', () => {
     const end = start + '以鐵如意擊之，應手而碎'.length;
     const nb = neighborhoodOf(T2, start, end);
     expect(nb.containing).toContain('以鐵如意擊之，應手而碎');
-    expect(nb.containing.startsWith('崇視訖，')).toBe(true);
+    // 顏興林 edition punctuates 「愷以示崇，崇視訖，」 as one sentence (wikisource had a 。 after 崇)
+    expect(nb.containing.startsWith('愷以示崇，崇視訖，')).toBe(true);
     // there is a sentence before this one in the passage
     expect(nb.prev.length).toBeGreaterThan(0);
     // and one after
@@ -286,6 +287,29 @@ describe('reason gate rules', () => {
   });
   it('accepts a wrong but reasoned answer', () => {
     expect(ruleCheckReason('因為之常常當的用', ctx).verdict).toBe('accept');
+  });
+  it('accepts a short reason that is a verbatim quote from the passage (v5.11)', () => {
+    const p = { sentenceText: '婢子百餘人，皆綾羅絝𧟌', optionTexts: [], passageText: '武帝嘗降王武子家，武子供饌，並用瑠璃器。婢子百餘人，皆綾羅絝𧟌，以手擎飲食。' };
+    expect(ruleCheckReason('百餘人', p)).toEqual({ verdict: 'accept', rule: 'quotes_evidence' });
+    expect(ruleCheckReason('瑠璃器', p).verdict).toBe('accept');
+    expect(ruleCheckReason('嗯', p).verdict).toBe('reject');
+    expect(ruleCheckReason('人多', p).verdict).toBe('reject');
+  });
+  it('leaves a non-Chinese reason to the model instead of rejecting it', () => {
+    expect(ruleCheckReason('since he has a lot of servants', ctx).verdict).toBe('undecided');
+  });
+  it('gives the model judge the question and the answer (v5.11)', () => {
+    const { system, user } = reasonJudgePrompt({ reason: 'since he has a lot of servants', sentence: '婢子百餘人',
+      options: [], question: '描寫了哪幾件事？', answer: '王武子很有錢' });
+    expect(user).toContain('描寫了哪幾件事？');
+    expect(user).toContain('王武子很有錢');
+    expect(system).toContain('任何語言');
+  });
+  it('makes the last rung a translation task (v5.11)', () => {
+    expect(openFinalQuestion('以鐵如意擊之，應手而碎')).toBe('現在請把「以鐵如意擊之，應手而碎」譯成白話，並寫出你的判斷依據。');
+    expect(openFinalQuestion('帝甚不平', { text: '意思', source: 'default' })).toContain('譯成白話');
+    expect(openFinalQuestion('擎', { text: '意思', source: 'default' })).toContain('白話意思');
+    expect(socraticOpenSystemPrompt()).toContain('不問主旨、作者意圖');
   });
   it('sends an unclear case to the model', () => {
     expect(ruleCheckReason('語感判斷出來', ctx).verdict).toBe('undecided');

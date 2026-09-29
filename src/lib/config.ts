@@ -6,7 +6,7 @@
  * Source: claude/實驗設計-Pilot版-十五項決定.md (v5.2)
  */
 export const CONFIG = {
-  version: 'v5.7',
+  version: 'v5.12',
 
   /** Stage time limits in seconds. Upper bound auto-advances; lower bound flags. */
   stageSeconds: {

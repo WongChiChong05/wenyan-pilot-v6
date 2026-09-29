@@ -35,12 +35,20 @@ const CONNECTIVES = ['因為', '所以', '由於', '既然', '可是', '但是',
  */
 export function ruleCheckReason(
   reason: string,
-  context: { sentenceText: string; optionTexts: string[] }
+  context: { sentenceText: string; optionTexts: string[]; passageText?: string }
 ): ReasonDecision {
   const text = reason.trim();
   const stripped = text.replace(/[\s，、。！？；：「」『』（）,.!?]/g, '');
 
   if (stripped.length === 0) return { verdict: 'reject', rule: 'empty' };
+
+  // A reason that is nothing but a verbatim quote of 2+ characters from the text (e.g. 「百餘人」)
+  // points at the evidence, which is exactly what the reject message asks for. It used to fall
+  // to too_short before the quote rule could see it.
+  const source = (context.passageText ?? context.sentenceText).replace(/[\s，、。！？；：「」『』（）]/g, '');
+  if (stripped.length >= 2 && source.includes(stripped)) {
+    return { verdict: 'accept', rule: 'quotes_evidence' };
+  }
   if (stripped.length < CONFIG.reasonMinChars) return { verdict: 'reject', rule: 'too_short' };
 
   const lowered = stripped.toLowerCase();
@@ -81,4 +89,4 @@ export function shouldForceAccept(rejections: number): boolean {
 }
 
 export const REASON_REJECT_MESSAGE =
-  '請說說你為什麼選這個，可以指出文中哪個字讓你這樣想。答錯沒關係。';
+  '請說說你為什麼這樣判斷，可以指出文中哪個字讓你這樣想。答錯沒關係。';

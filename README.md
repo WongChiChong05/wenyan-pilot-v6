@@ -18,7 +18,7 @@
 | 套件安裝 / `npm run build` / `npm run typecheck` | **已執行通過**；部署追蹤包含驅動，已移除本機私密資料參照 |
 | 瀏覽器互動（選取文字、計時器、UI） | S2 已開啟檢視並修正提交 403；全螢幕切換阻礙完整操作，**未完成全部手動檢查** |
 | LLM 供應商請求格式（Anthropic 與 Gemini）契約測試 | **已執行，6 項通過**（用假的 fetch 驗證送出的 URL、標頭、body 與回應解析） |
-| 真實 API 呼叫（Anthropic） | **已在 Vercel dry-run 驗證**；焦點選項、選擇題與解釋均由 Claude 回傳且未降級；Gemini 未驗證 |
+| 真實 API 呼叫（Anthropic） | 舊版焦點選項與選擇題曾在 Vercel dry-run 驗證；v5.8 開放作答流程尚未經真實 API 與瀏覽器驗證；Gemini 未驗證 |
 | Supabase 後端 | **已在 Vercel dry-run 驗證**建立參與者、保存測驗、AI 互動及量表並跨請求讀回；正式多人負載仍未驗證 |
 
 新增 `pg` 資料庫驅動與 PGlite 測試環境。教材仍未簽核；工程測試通過不代表可正式收案。自由選取第三層、理由退回次數及指標分母問題列於審閱指南。
@@ -242,15 +242,15 @@ OFFLINE VERIFICATION: OK
 | 3c | 唯一的門檻是**停留時間**，三組相同 | `CONFIG.minReadingSeconds`、`api/advance/route.ts` | 讀該檔 |
 | 3d | 「完全沒用過」要被記下來，但**不得當成排除** | `advance/route.ts` 的 `no_assist_used`、`CONFIG.exclusion.descriptiveOnly` | 讀該檔；summary 的 `excluded` 不含描述性旗標 |
 | 4 | 提問組：解釋只在「嘗試過且給過理由」之後出現 | `src/lib/ladder.ts`（伺服器端狀態機，模型無權決定） | `unit.test.ts > socratic ladder`、`smoke-run.ts` 逐一互動檢查 |
-| 4b | 目標句每一層都是選擇題＋必填理由；**選對但沒理由不算過** | `src/lib/ladder.ts` 的 `layer_choice`、`src/lib/engine.ts: socraticStep`／`choiceForStep` | `unit.test.ts > ladder: multiple choice + reason`、`engine.test.ts > does not open the explanation on a lucky pick` |
-| 4c | 層一層二只問「觀察」，不問意思，不得預告層三答案 | `src/content/passages.ts` 的 `layer1Choice`／`layer2Choice` | `validate:content` 擋下與層三選項相同的層別 |
-| 4d | **Task A**：自由 highlight 的層一／層二也是選擇題，選項由模型生成後**逐項洩答檢查＋結構檢查**；失敗重試一次後退到固定的觀察選項題（`degraded=true`），退化題**不得**讓階梯提前結束 | `src/lib/engine.ts: socraticChoice`、`src/lib/leak.ts: checkSocraticOptions`／`validateChoiceStructure`、`src/lib/prompts.ts: FALLBACK_SOCRATIC_MCQ` | `engine.test.ts > Task-A degraded fallback for free-highlight MCQ`；`unit.test.ts > Task-A leak-check on generated options` |
-| 4e | **Task A 稽核**：生成的選項與 `answerIndex` 一律寫入互動列 (`generatedOptions`／`generatedAnswerIndex`／`degraded`)；N=45 事後 100% 人工複審 | `src/lib/types.ts: InteractionRow`（Task-A 欄位）、`src/lib/engine.ts: socraticStep` 的 `log(...)` | 讀該檔；`admin/export` 因 CSV 是動態欄位，會自動帶出新欄位 |
-| 4f | 非目標多字反白由讀者先確認焦點；候選必須出自原反白，人名等專名後排，並保留「其他」 | `src/lib/focus.ts`、`engine.ts: focusCandidates`、`run/page.tsx` 的 focus composer | `engine.test.ts > asks the reader to choose a focus`、`unit.test.ts > focus-option validation` |
+| 4b | v5.8 提問組每層均自行輸入答案與理由；答案即使不正確，理由有內容才進下一層；三層後顯示解釋 | `src/lib/ladder.ts: open_response`、`src/lib/engine.ts: replyOpen` | `engine.test.ts > Socratic arm: open answer and reason` |
+| 4c | 層一層二只問「觀察」，不問意思，不得預告最後解釋 | `src/content/passages.ts: layer1/layer2`、`src/lib/prompts.ts: socraticOpenSystemPrompt` | `validate:content` 檢查預寫問句，`engine.test.ts` 檢查模型問句洩答 |
+| 4d | 自由 highlight 的層一／層二由模型產生開放題；問題洩答、含選項或格式錯誤時重試一次，再退到固定開放觀察題 | `src/lib/engine.ts: socraticOpenQuestion`、`src/lib/leak.ts: checkSocraticOutput` | `engine.test.ts > retries a generated question once` |
+| 4e | 模型原始回覆與檢查旗標存入互動列，生成選項與答案索引不再供新互動使用 | `src/lib/engine.ts: socraticStep`、`src/lib/types.ts: InteractionRow` | `engine.test.ts > never persists options` |
+| 4f | 非目標多字反白由讀者自行輸入焦點，必須出現在原反白內，不提供建議選項 | `src/lib/engine.ts: startAssist`／`reply`、`src/app/run/page.tsx` | `engine.test.ts > focus as free text` |
 | 5 | 理由把關看「有沒有理由」，不看對錯 | `src/lib/reasonGate.ts` | `unit.test.ts > reason gate rules` |
-| 6 | **待定案衝突**：註解寫第 3 次，但實作在第 2 次不合格時強制接受 | `src/lib/reasonGate.ts: shouldForceAccept`、`ladder.ts` | 現有測試固定實作；詳見審閱指南 §4.2 |
+| 6 | v5.8 開放作答：理由不足會停留原層，不能用重複「猜的」繞過；舊選擇題互動仍保留舊版退回上限 | `src/lib/engine.ts: replyOpen`、`src/lib/reasonGate.ts` | `engine.test.ts > does not advance after repeated contentless reasons` |
 | 7 | 目標句的解釋兩臂逐字相同 | `src/lib/engine.ts: explanationFor`（目標句一律用 content 裡的文字） | `engine.test.ts > gives the direct arm the SAME explanation` |
-| 8 | 提問組不得洩答（含「加了問號的答案」），不得使用只抄相鄰字的低價值題；Task A 起也**檢查每一個生成選項** | `src/lib/leak.ts: checkSocraticOutput`／`checkSocraticOptions` + `engine.ts` 的重生成與降級 | `unit.test.ts > leak detection`、`unit.test.ts > Task-A leak-check on generated options`、`engine.test.ts > never lets a leaking question stem reach the reader` |
+| 8 | 提問組不得洩答（含「加了問號的答案」），不得使用只抄相鄰字的低價值題；新流程不產生選項 | `src/lib/leak.ts: checkSocraticOutput` + `engine.ts: socraticOpenQuestion` 的重生成與降級 | `unit.test.ts > leak detection`、`engine.test.ts > blocks a question that leaks an answer` |
 | 9 | 直答組不得一次給整篇譯文 | `src/lib/leak.ts: checkDirectOutput` | `unit.test.ts > flags a whole-passage translation` |
 | 10 | 對照組 highlight 只記錄、不回應；沒有側欄；三組都不看到底色 | `src/lib/config.ts: targetHintArms`（空陣列）、`src/lib/view.ts`（targets 給空陣列）、`view.ts: assist.sidebar` | `unit.test.ts > shades the target sentences for nobody` |
 | 11 | 兩臂共用同一模型與參數 | `src/lib/config.ts: CONFIG.llm`（唯一來源） | system/user prompt 及呼叫次數不同；不能稱為只有 system prompt 不同 |
@@ -337,22 +337,16 @@ grep -rn "CONFIG.llm" src/                                                  # �
 **提問組的階梯（目標句）**
 
 ```
-層一  選擇題（觀察題）＋必填理由
-        選對＋理由過 ─────────────► 解釋
-        選錯＋理由過 ─► 層二
-        理由不過（最多 2 次）─► 留在層一，再問一次
-層二  選擇題（觀察題）＋必填理由      同上規則
-層三  選擇題（答案題）＋必填理由 ─► 解釋（不論對錯）
+層一  開放式觀察題＋自行作答與說理 ─► 層二
+層二  開放式觀察題＋自行作答與說理 ─► 層三
+層三  開放式理解題＋自行作答與說理 ─► 解釋
+理由不足：留在同層重答，直到提供有內容的理由
 解釋  按「看完了」 ─► 這一句結束，正文解鎖
 ```
 
-層一層二只問**觀察**（那個字前後是什麼詞、那段話在做什麼），不問意思，所以不會預告層三的答案。
-`validate:content` 會擋下與層三選項相同的層別。
+層一層二只問**觀察**，第三層才問理解。讀者每層都需自行寫出判斷與理由；理由門檻只檢查有無依據，不判答案真假。這避免選擇題的猜中機率與選項提示，但也失去機器直接判定每層答對率的資料。
 
-**為什麼選對還要寫理由**：三個選項猜中率 1/3。如果選對就直接看到解釋，等於三分之一的受試者
-一鍵跳過整個階梯，對他們而言提問操弄根本沒有發生。理由把關（`reasonGate.ts`）是擋這件事的唯一機制。
-
-**自由標記（非目標句）** 的第一、二層使用模型生成三選項＋理由；經結構與洩答檢查，失败再生成一次，仍失敗則回退固定觀察題。生成答案的語義仍需人工稽核。第三層目前仍是通用選項，屬收案前必須處理的設計限制。
+**自由標記（非目標句）** 的第一、二層由模型產生開放題；洩答或格式不合格重試一次，仍失敗則回退固定開放觀察題。生成問題的語義品質仍需人工稽核。舊選擇題欄位與處理路徑僅供既有互動恢復，不用於 v5.8 新互動。
 
 **三臂的版面差異**
 
@@ -436,9 +430,9 @@ grep -rn "CONFIG.llm" src/                                                  # �
 2. S1 作答 → 交卷後看 `data/db.json`：該participant 應該有 `arm`、`stratum`、`pretestScore`
 3. S2：
    - 用滑鼠選一個字 → 提問組應出現問題、直答組應出現解釋、對照組沒有回應
-   - 提問組第一層就有選項與理由欄；檢查選錯但有理由時下降一層
-   - 理由寫「猜的」→ 應被退回，訊息為「請說說你為什麼選這個…」
-   - 理由寫「因為前面是擊」→ 應出現解釋與「看完了」
+   - 提問組第一層有答案與理由欄，沒有選項；即使答案錯誤，有理由也進下一層
+   - 理由寫「猜的」→ 應被退回，訊息為「請說說你為什麼這樣判斷…」
+   - 每層寫有內容的答案與理由；第三層後才出現解釋與「看完了」
    - 不使用協助也能在 180 秒後繼續；不設四句完成下限
 4. 切換分頁 4 次 → `data/db.json` 中該人應出現 `tab_switching` 標記
 5. 嘗試複製文章文字 → 應該複製不到
@@ -462,14 +456,14 @@ GET /api/admin/summary                    # 營運摘要，正式分析另核對
 ```
 
 `interactions` 保留生成文字的原始回傳（`rawResponse`）與檢查旗標（`leakFlags`），理由判定另在 `events.reason_judgement`。旗標包括攔截後重新生成，不等於讀者實際看到洩答；正式操弄檢核需要人工判讀。
-`events` 的 `read_done_click` 內含每句的結束位置（第 1 層答對／第 2 層答對／選對／選錯）、退回次數、是否「理由不足」、花費毫秒。
+`events` 的 `read_done_click` 內含每句的結束位置（v5.8 為 `open_response`）、退回次數、是否「理由不足」、花費毫秒。
 
 ---
 
 ## 7. 已知限制
 
 - 檔案式儲存限單程序開發；Supabase/PostgreSQL 已完成單一 dry-run 流程驗證，正式多人負載仍待驗證。
-- 非目標句前兩層由模型生成，第三層仍為通用固定選項；第三層語義有效性是未解決研究問題。
+- 非目標句前兩層由模型生成；生成問題的語義有效性仍需人工稽核。第三層改為固定開放式理解題。
 - 階段計時與延遲窗口已由伺服器驗證；前端 `rtMs` 仍非真正逐題反應時間。
 - 理由退回次數與規格註解衝突；教材簽核、模型語義、摘要指標及暴露量限制見審閱指南。
 - 手機版沒有特別處理，建議只開放桌機作答。

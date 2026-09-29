@@ -4,10 +4,12 @@ import { CONFIG } from './config';
 import { classifyGranularity, lowerBoundMet, matchTarget, neighborhoodOf } from './highlight';
 import { endPosition, initialLadder, reduce, explanationAllowed } from './ladder';
 import { checkDirectOutput, checkSocraticOptions, checkSocraticOutput, validateChoiceStructure } from './leak';
-import { fallbackFocusOptions, focusOccursInSelection, validateFocusOptions } from './focus';
+import { deriveFocus, fallbackFocusOptions, focusOccursInSelection, validateFocusOptions } from './focus';
 import { getProvider, parseJsonObject, type LlmProvider } from './llm';
 import {
   answerJudgePrompt,
+  cleanPerspective,
+  DEFAULT_PERSPECTIVE,
   directSystemPrompt,
   directTurnPrompt,
   FALLBACK_SOCRATIC_MCQ,
@@ -15,6 +17,11 @@ import {
   focusOptionsPrompt,
   focusOptionsSystemPrompt,
   reasonJudgePrompt,
+  openFallbackQuestion,
+  openFinalQuestion,
+  PERSPECTIVE_PROMPT,
+  perspectivePrompt,
+  socraticOpenSystemPrompt,
   socraticSystemPrompt,
   socraticTurnPrompt,
 } from './prompts';
@@ -25,7 +32,7 @@ import type { ActiveInteraction, InteractionRow, Participant, TargetSentence } f
 export interface AssistTurn {
   interactionId: string;
   /** what the reader sees next */
-  kind: 'focus' | 'question' | 'choice' | 'reject' | 'explanation' | 'none';
+  kind: 'focus' | 'perspective' | 'question' | 'choice' | 'reject' | 'explanation' | 'none';
   text: string;
   choice?: { prompt: string; options: string[] };
   focus?: { options: string[]; allowOther: true };
@@ -41,8 +48,12 @@ export interface AssistTurn {
   completedTargetIds: string[];
   degraded?: boolean;
   /** Character offsets of the active selection in the passage. Sent so the client
-   *  can mark the highlight and place the inline unlock button beside it. */
+   *  can mark the highlight while the interaction is open. */
   range?: { start: number; end: number };
+  /** v5.12: the interaction was dropped by the reader (see isCancellable). */
+  cancelled?: boolean;
+  /** v5.12: whether the reader may still cancel; filled in by the API layer. */
+  cancellable?: boolean;
 }
 
 /** Task-A: generated free-highlight MCQ, before the engine decides what to log. */
@@ -64,6 +75,14 @@ interface GeneratedFocus {
   rawResponse: string | null;
   latencyMs: number;
   flags: string[];
+}
+
+interface GeneratedOpenQuestion {
+  text: string;
+  degraded: boolean;
+  rawResponse: string | null;
+  latencyMs: number;
+  leakFlags: string[];
 }
 
 export class Engine {
@@ -118,6 +137,7 @@ export class Engine {
     const target = this.target(targetId);
     const active: ActiveInteraction = {
       interactionId: randomUUID(),
+      answerMode: 'open',
       targetId,
       selection,
       selectionStart: selStart >= 0 ? selStart : undefined,
@@ -155,6 +175,11 @@ export class Engine {
       };
     }
 
+    // v5.9: free highlights in BOTH AI arms first clarify (focus word if the highlight is
+    // longer than one character, then the reader's typed perspective). Target sentences
+    // skip this: their ladder and explanation are fixed so the two arms see identical text.
+    if (!target) return this.beginClarify(p, active, trimmed);
+
     if (p.arm === 'direct') {
       const { text, degraded } = await this.directExplanation(p, active, target);
       const saved = await this.store.updateParticipant(p.id, {
@@ -172,16 +197,71 @@ export class Engine {
       };
     }
 
-    // Socratic readers who highlighted more than one possible word first choose the
+    // socratic arm, target sentence: layer 1 (pre-written)
+    const focused = active;
+    const step = await this.socraticStep(p, focused, target, 1);
+    const activeAfter: ActiveInteraction = {
+      ...focused,
+      turnIndex: 1,
+      activeChoice: step.storeChoice,
+      pendingQuestion: step.kind === 'question' ? step.text : undefined,
+    };
+    const saved = await this.store.updateParticipant(p.id, { active: activeAfter });
+    return {
+      interactionId: active.interactionId,
+      kind: step.kind,
+      text: step.text,
+      choice: step.choice,
+      completed: false,
+      lowerBoundMet: lowerBoundMet(LEARNING_PASSAGE, saved.completedTargets, p.arm),
+      completedTargetIds: saved.completedTargets,
+      degraded: step.degraded,
+      range: rangeOf(active),
+    };
+  }
+
+  /**
+   * v5.9 clarification for a FREE highlight, both AI arms.
+   * Step 1 (only when more than one character is highlighted and it is not an annotated
+   * term): the reader types the word they mean. Step 2: the reader types what they want to
+   * understand about it; an empty entry means DEFAULT_PERSPECTIVE (guide towards meaning).
+   * Nothing is offered as an option in either step.
+   */
+  private async beginClarify(p: Participant, active: ActiveInteraction, trimmed: string): Promise<AssistTurn> {
+    // v5.10: one free-text question replaces the separate focus step. The reader may type a
+    // question, a word, or nothing; the focus word is derived from what they typed
+    // (focus.ts: deriveFocus) when the perspective is submitted. Nothing is length-limited
+    // on the reader's side. The legacy multiple-choice focus path below is unreachable.
+    if (active.answerMode === 'open') {
+      const annotated = LEARNING_PASSAGE.annotations.find(a => a.term === trimmed)?.term;
+      return this.askPerspective(p, annotated ? withFocus(active, annotated, 'suggestion') : active);
+    }
+    // Readers in either AI arm who highlighted more than one possible word first type the
     // exact word/character they meant. The model only proposes substrings; the reader
     // remains the authority, and "other" is validated against the original highlight.
     const knownTerm = LEARNING_PASSAGE.annotations.find(a => a.term === trimmed)?.term;
     const visibleChars = [...trimmed.replace(/[^\u3400-\u9fff]/gu, '')];
-    // Target sentences keep their pre-written ladder. Replacing it with a generated
+    // Target sentences keep their pre-written ladder (handled by the caller). Replacing it with a generated
     // focus-specific ladder would break explanation parity between the two AI arms.
     // The clarification fixes arbitrary/free highlights, which are where the model
     // otherwise has to guess what a long selection means.
-    if (!target && visibleChars.length > 1 && !knownTerm) {
+    if (visibleChars.length > 1 && !knownTerm) {
+      if (active.answerMode === 'open') {
+        const prompt = '你主要想問這段文字裡的哪一個字或詞？請自行輸入反白範圍內的字詞。';
+        await this.logSystem(p, active, prompt, 'focus', null, []);
+        const saved = await this.store.updateParticipant(p.id, {
+          active: { ...active, turnIndex: 1, focusPending: true },
+        });
+        return {
+          interactionId: active.interactionId,
+          kind: 'focus',
+          text: prompt,
+          completed: false,
+          lowerBoundMet: lowerBoundMet(LEARNING_PASSAGE, saved.completedTargets, p.arm),
+          completedTargetIds: saved.completedTargets,
+          range: rangeOf(active),
+        };
+      }
       const generated = await this.focusCandidates(p, active);
       if (generated.options.length > 1) {
         const prompt = '你主要想問這一段裡的哪一個字或詞？';
@@ -225,23 +305,23 @@ export class Engine {
     }
 
     const focused = knownTerm ? withFocus(active, knownTerm, 'suggestion') : active;
-    // socratic: layer 1
-    const step = await this.socraticStep(p, focused, target, 1);
-    const activeAfter: ActiveInteraction = {
-      ...focused,
-      turnIndex: 1,
-      activeChoice: step.storeChoice,
-    };
-    const saved = await this.store.updateParticipant(p.id, { active: activeAfter });
+    return this.askPerspective(p, focused);
+  }
+
+  /** Logs the perspective prompt one system turn after `active.turnIndex` and waits for it. */
+  private async askPerspective(p: Participant, active: ActiveInteraction): Promise<AssistTurn> {
+    const prompt = perspectivePrompt(effectiveSelection(active));
+    await this.logSystem(p, active, prompt, 'perspective', null, []);
+    const saved = await this.store.updateParticipant(p.id, {
+      active: { ...active, turnIndex: active.turnIndex + 2, focusPending: false, perspectivePending: true },
+    });
     return {
       interactionId: active.interactionId,
-      kind: step.kind,
-      text: step.text,
-      choice: step.choice,
+      kind: 'perspective',
+      text: prompt,
       completed: false,
       lowerBoundMet: lowerBoundMet(LEARNING_PASSAGE, saved.completedTargets, p.arm),
       completedTargetIds: saved.completedTargets,
-      degraded: step.degraded,
       range: rangeOf(active),
     };
   }
@@ -258,7 +338,8 @@ export class Engine {
     p: Participant,
     active: ActiveInteraction,
     target: TargetSentence | null,
-    layer: 1 | 2
+    layer: 1 | 2,
+    lastReaderTurn?: string
   ): Promise<{
     kind: AssistTurn['kind'];
     text: string;
@@ -267,6 +348,31 @@ export class Engine {
     /** For free highlights only: what to persist on `active.activeChoice`. */
     storeChoice?: ActiveInteraction['activeChoice'];
   }> {
+    if (active.answerMode === 'open') {
+      if (target) {
+        const prompt = layer === 1 ? target.layer1 : target.layer2;
+        await this.logSystem(p, active, prompt, 'question', null, []);
+        return { kind: 'question', text: prompt, degraded: false };
+      }
+      const question = await this.socraticOpenQuestion(p, active, layer, lastReaderTurn);
+      await this.log({
+        participantId: p.id,
+        interactionId: active.interactionId,
+        inTargetSentence: active.targetId,
+        granularity: active.granularity,
+        highlightText: active.selection,
+        turnIndex: active.turnIndex + 2,
+        actor: 'system',
+        type: 'question',
+        text: question.text,
+        strategy: null,
+        latencyMs: question.latencyMs,
+        rawResponse: question.rawResponse,
+        leakFlags: question.leakFlags,
+        degraded: question.degraded,
+      });
+      return { kind: 'question', text: question.text, degraded: question.degraded };
+    }
     const spec = layer === 1 ? target?.layer1Choice : target?.layer2Choice;
     if (target && spec) {
       const prompt = layer === 1 ? target.layer1 : target.layer2;
@@ -351,8 +457,9 @@ export class Engine {
   async reply(
     p: Participant,
     payload:
-      | { kind: 'answer'; text: string }
+      | { kind: 'answer'; text: string; reason?: string }
       | { kind: 'focus'; value: string; source: 'suggestion' | 'other' }
+      | { kind: 'perspective'; value: string }
       | { kind: 'choice'; index: number; reason: string }
       | { kind: 'read_done' }
   ): Promise<AssistTurn> {
@@ -366,17 +473,77 @@ export class Engine {
       return { ...done, kind: 'none', text: '', interactionId: active.interactionId };
     }
 
-    if (p.arm !== 'socratic') throw new Error('only the socratic arm has reader turns');
+    if (p.arm === 'control') throw new Error('control has no reader turns');
+    // v5.9: the direct arm types a focus word and a perspective, but never answers questions.
+    if (p.arm === 'direct' && payload.kind !== 'focus' && payload.kind !== 'perspective') {
+      throw new Error('only the socratic arm answers questions');
+    }
 
     if (active.focusPending && payload.kind !== 'focus') {
       throw new Error('focus choice required');
     }
+    if (active.perspectivePending && payload.kind !== 'perspective') {
+      throw new Error('perspective entry required');
+    }
+
+    if (payload.kind === 'perspective') {
+      if (!active.perspectivePending) throw new Error('perspective entry unavailable');
+      const typed = cleanPerspective(payload.value);
+      const derived = active.focusSelection ? null : deriveFocus(active.selection, payload.value);
+      const base = derived ? withFocus(active, derived, 'question') : active;
+      const withPerspective: ActiveInteraction = {
+        ...base,
+        perspective: typed || DEFAULT_PERSPECTIVE,
+        perspectiveSource: typed ? 'typed' : 'default',
+        perspectivePending: false,
+      };
+      await this.logUser(p, active, typed ? `想問：${typed}` : `（未輸入，預設：${DEFAULT_PERSPECTIVE}）`);
+      await this.store.addEvent({
+        id: randomUUID(),
+        participantId: p.id,
+        event: 'perspective_set',
+        payload: {
+          interactionId: active.interactionId,
+          selection: effectiveSelection(active),
+          perspective: withPerspective.perspective,
+          source: withPerspective.perspectiveSource,
+          derivedFocus: derived,
+          raw: payload.value.slice(0, 200),
+        },
+        ts: new Date().toISOString(),
+      });
+      if (p.arm === 'direct') {
+        const { text, degraded } = await this.explanationFor(p, withPerspective, null);
+        await this.store.updateParticipant(p.id, {
+          active: {
+            ...withPerspective,
+            turnIndex: active.turnIndex + 2,
+            ladder: { ...active.ladder, step: 'explanation' },
+          },
+        });
+        return { ...(await this.turn(withPerspective, 'explanation', text, p)), degraded };
+      }
+      const step = await this.socraticStep(p, withPerspective, null, 1);
+      await this.store.updateParticipant(p.id, {
+        active: {
+          ...withPerspective,
+          turnIndex: active.turnIndex + 2,
+          activeChoice: step.storeChoice,
+          pendingQuestion: step.kind === 'question' ? step.text : undefined,
+        },
+      });
+      return {
+        ...(await this.turn(withPerspective, step.kind, step.text, p)),
+        choice: step.choice,
+        degraded: step.degraded,
+      };
+    }
 
     if (payload.kind === 'focus') {
-      if (!active.focusPending || !active.focusOptions) throw new Error('focus choice unavailable');
+      if (!active.focusPending || (active.answerMode !== 'open' && !active.focusOptions)) throw new Error('focus choice unavailable');
       const value = payload.value.trim();
       if (!focusOccursInSelection(active.selection, value)) throw new Error('focus must occur in selection');
-      if (payload.source === 'suggestion' && !active.focusOptions.includes(value)) {
+      if (payload.source === 'suggestion' && !active.focusOptions?.includes(value)) {
         throw new Error('unknown focus suggestion');
       }
       const focused = withFocus(active, value, payload.source);
@@ -388,26 +555,19 @@ export class Engine {
         payload: {
           interactionId: active.interactionId,
           originalSelection: active.selection,
-          options: active.focusOptions,
+          options: active.focusOptions ?? [],
           focusSelection: value,
           source: payload.source,
         },
         ts: new Date().toISOString(),
       });
-      const step = await this.socraticStep(p, focused, target, 1);
-      await this.store.updateParticipant(p.id, {
-        active: {
-          ...focused,
-          turnIndex: active.turnIndex + 2,
-          focusPending: false,
-          activeChoice: step.storeChoice,
-        },
-      });
-      return {
-        ...(await this.turn(focused, step.kind, step.text, p)),
-        choice: step.choice,
-        degraded: step.degraded,
-      };
+      // v5.9: the focus word is followed by the reader's perspective, in both AI arms.
+      return this.askPerspective(p, focused);
+    }
+
+    if (active.answerMode === 'open') {
+      if (payload.kind !== 'answer') throw new Error('open answer required');
+      return this.replyOpen(p, active, target, payload.text, payload.reason ?? '');
     }
 
     if (payload.kind === 'answer') {
@@ -588,6 +748,75 @@ export class Engine {
     return { ...(await this.turn(active, 'explanation', text, p)), degraded };
   }
 
+  /** v5.8: each rung requires a self-written answer and reason, even when uncertain. */
+  private async replyOpen(
+    p: Participant,
+    active: ActiveInteraction,
+    target: TargetSentence | null,
+    answerText: string,
+    reasonText: string
+  ): Promise<AssistTurn> {
+    if (!['layer1', 'layer2', 'layer3_choice'].includes(active.ladder.step) || !active.pendingQuestion) {
+      throw new Error('text answer unavailable');
+    }
+    const answer = answerText.trim();
+    const reason = reasonText.trim();
+    if (!answer || !reason || /^(不知道|不清楚|不會|我不確定|猜的|隨便|idk)$/i.test(answer)) {
+      throw new Error('answer and reason required');
+    }
+    await this.logUser(p, active, `答案：${answer}｜理由：${reason}`);
+    const accepted = await this.judgeReason(p.id, reason, target, active, [], false, {
+      question: active.pendingQuestion,
+      answer,
+    });
+    if (!accepted) {
+      const ladder = {
+        ...active.ladder,
+        reasonRejections: active.ladder.reasonRejections + 1,
+        reasonRejectionsTotal: (active.ladder.reasonRejectionsTotal ?? 0) + 1,
+      };
+      await this.logSystem(p, active, REASON_REJECT_MESSAGE, 'reject', null, []);
+      await this.store.updateParticipant(p.id, {
+        active: { ...active, turnIndex: active.turnIndex + 2, ladder },
+      });
+      return this.turn(active, 'question', REASON_REJECT_MESSAGE, p);
+    }
+
+    const next = {
+      ...reduce(active.ladder, { kind: 'open_response' }),
+      reasonRejections: 0,
+    };
+    if (explanationAllowed(next)) {
+      const { text, degraded } = await this.explanationFor(p, active, target);
+      await this.store.updateParticipant(p.id, {
+        active: { ...active, turnIndex: active.turnIndex + 2, ladder: next, pendingQuestion: undefined },
+      });
+      return { ...(await this.turn(active, 'explanation', text, p)), degraded };
+    }
+
+    if (next.step === 'layer2') {
+      const step = await this.socraticStep(p, { ...active, ladder: next }, target, 2, `答案：${answer}；理由：${reason}`);
+      await this.store.updateParticipant(p.id, {
+        active: {
+          ...active,
+          turnIndex: active.turnIndex + 2,
+          ladder: next,
+          pendingQuestion: step.text,
+        },
+      });
+      return { ...(await this.turn(active, 'question', step.text, p)), degraded: step.degraded };
+    }
+
+    const prompt = target
+      ? openFinalQuestion(target.text)
+      : openFinalQuestion(effectiveSelection(active), perspectiveOf(active));
+    await this.logSystem(p, active, prompt, 'question', null, []);
+    await this.store.updateParticipant(p.id, {
+      active: { ...active, turnIndex: active.turnIndex + 2, ladder: next, pendingQuestion: prompt },
+    });
+    return this.turn(active, 'question', prompt, p);
+  }
+
   // ---------- helpers ----------
 
   private async turn(
@@ -637,10 +866,16 @@ export class Engine {
     reason: string,
     target: TargetSentence | null,
     active: ActiveInteraction,
-    options: string[]
+    options: string[],
+    failOpen = true,
+    open?: { question?: string; answer?: string }
   ): Promise<boolean> {
     const sentenceText = target?.text ?? effectiveSelection(active);
-    const rule = ruleCheckReason(reason, { sentenceText, optionTexts: options });
+    const rule = ruleCheckReason(reason, {
+      sentenceText,
+      optionTexts: options,
+      passageText: LEARNING_PASSAGE.text,
+    });
     const audit = async (accepted: boolean, details: Record<string, unknown>) => {
       await this.store.addEvent({ id: randomUUID(), participantId,
         event: 'reason_judgement', payload: { interactionId: active.interactionId,
@@ -648,13 +883,16 @@ export class Engine {
       return accepted;
     };
     if (rule.verdict !== 'undecided') return audit(rule.verdict === 'accept', { source: 'rule', rule: rule.rule });
-    const { system, user } = reasonJudgePrompt({ reason, sentence: sentenceText, options });
+    const { system, user } = reasonJudgePrompt({
+      reason, sentence: sentenceText, options, question: open?.question, answer: open?.answer,
+    });
     const res = await this.llm.complete(system, user);
     const parsed = parseJsonObject<{ verdict: string }>(res.text);
     const failed = !res.ok || !['accept', 'reject'].includes(parsed?.verdict ?? '');
-    // Preserve the existing fail-open policy, but make it observable for audit.
-    return audit(failed || parsed?.verdict !== 'reject', { source: 'model', rule: rule.rule,
-      failOpen: failed, rawResponse: res.raw, latencyMs: res.latencyMs });
+    // Legacy choices remain fail-open. New open answers require a recognizable
+    // reason, so an unavailable or malformed model verdict cannot advance them.
+    return audit(failed ? failOpen : parsed?.verdict !== 'reject', { source: 'model', rule: rule.rule,
+      modelFailed: failed, failOpen: failed && failOpen, rawResponse: res.raw, latencyMs: res.latencyMs });
   }
 
   /** Target sentences use the pre-written text, so both AI arms are identical there. */
@@ -695,6 +933,7 @@ export class Engine {
             passage: LEARNING_PASSAGE.text,
           selection: effectiveSelection(active),
           granularity: effectiveGranularity(active),
+            perspective: perspectiveOf(active),
             retryFlags: attempt === 0 ? undefined : attempts[0]?.flags,
           })
         );
@@ -840,6 +1079,71 @@ export class Engine {
     };
   }
 
+  private async socraticOpenQuestion(
+    p: Participant,
+    active: ActiveInteraction,
+    layer: 1 | 2,
+    lastReaderTurn?: string
+  ): Promise<GeneratedOpenQuestion> {
+    const start = active.focusStart ?? active.selectionStart;
+    const end = active.focusEnd ?? active.selectionEnd;
+    const neighborhood = start !== undefined && end !== undefined
+      ? neighborhoodOf(LEARNING_PASSAGE.text, start, end)
+      : undefined;
+    const attempts: { raw: string; flags: string[] }[] = [];
+    let latencyMs = 0;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await this.llm.complete(
+        socraticOpenSystemPrompt(),
+        socraticTurnPrompt({
+          passage: LEARNING_PASSAGE.text,
+          selection: effectiveSelection(active),
+          selectionStart: start,
+          selectionEnd: end,
+          neighborhood,
+          layer,
+          granularity: effectiveGranularity(active),
+          lastReaderTurn,
+          perspective: perspectiveOf(active),
+          retryFlags: attempt ? attempts[0].flags : undefined,
+        })
+      );
+      latencyMs += result.latencyMs;
+      const parsed = parseJsonObject<{ type?: unknown; text?: unknown; options?: unknown; answerIndex?: unknown }>(result.text);
+      const candidate = typeof parsed?.text === 'string' ? parsed.text.trim() : '';
+      const flags = !result.ok || !parsed || parsed.type !== 'question' || !candidate
+        ? ['parse:invalid_question']
+        : [...checkSocraticOutput(candidate).flags];
+      if (candidate && !/[？?]/.test(candidate)) flags.push('not_question');
+      if (parsed && ('options' in parsed || 'answerIndex' in parsed)) flags.push('unexpected_options');
+      if ([...effectiveSelection(active).replace(/[\s，、。！？；：「」『』（）]/g, '')].length > 1 && candidate.includes('這個字')) {
+        flags.push('selection_reference');
+      }
+      attempts.push({ raw: result.raw, flags });
+      if (!flags.length) {
+        return {
+          text: candidate,
+          degraded: false,
+          rawResponse: attempts.length === 1 ? result.raw : JSON.stringify(attempts),
+          latencyMs,
+          leakFlags: attempts.length === 1 ? [] : ['regenerated'],
+        };
+      }
+    }
+    await this.store.addEvent({
+      id: randomUUID(), participantId: p.id, event: 'llm_failure',
+      payload: { where: `socratic_question_layer${layer}`, flags: attempts.flatMap(a => a.flags) },
+      ts: new Date().toISOString(),
+    });
+    return {
+      text: openFallbackQuestion(effectiveSelection(active), layer),
+      degraded: true,
+      rawResponse: JSON.stringify(attempts),
+      latencyMs,
+      leakFlags: ['fallback_question', ...attempts.flatMap(a => a.flags)],
+    };
+  }
+
   private async directExplanation(
     p: Participant,
     active: ActiveInteraction,
@@ -891,6 +1195,38 @@ export class Engine {
       rawResponse: JSON.stringify(attempts),
       latencyMs,
       flags: ['fallback_focus', ...attempts.flatMap(item => item.flags)],
+    };
+  }
+
+  /** v5.12: drop the open interaction without completing it (see isCancellable). */
+  async cancel(p: Participant): Promise<AssistTurn> {
+    const active = p.active;
+    if (!active) throw new Error('no open interaction');
+    if (!isCancellable(active)) throw new Error('cannot cancel after answering');
+    await this.logUser(p, active, '（取消這次選取）');
+    await this.store.addEvent({
+      id: randomUUID(),
+      participantId: p.id,
+      event: 'selection_cancelled',
+      payload: {
+        interactionId: active.interactionId,
+        targetId: active.targetId,
+        selection: active.selection,
+        granularity: active.granularity,
+        step: active.perspectivePending ? 'perspective' : active.ladder.step,
+        elapsedMs: Date.now() - new Date(active.startedTs).getTime(),
+      },
+      ts: new Date().toISOString(),
+    });
+    const saved = await this.store.updateParticipant(p.id, { active: null });
+    return {
+      interactionId: active.interactionId,
+      kind: 'none',
+      text: '',
+      completed: false,
+      cancelled: true,
+      lowerBoundMet: lowerBoundMet(LEARNING_PASSAGE, saved.completedTargets, p.arm),
+      completedTargetIds: saved.completedTargets,
     };
   }
 
@@ -1002,6 +1338,13 @@ function rangeOf(active: ActiveInteraction): { start: number; end: number } | un
     : undefined;
 }
 
+/** The reader's perspective as prompt data; undefined for target sentences and pre-v5.9 rows. */
+function perspectiveOf(active: ActiveInteraction): { text: string; source: 'typed' | 'default' } | undefined {
+  return active.perspective
+    ? { text: active.perspective, source: active.perspectiveSource ?? 'typed' }
+    : undefined;
+}
+
 function effectiveSelection(active: ActiveInteraction): string {
   return active.focusSelection ?? active.selection;
 }
@@ -1013,7 +1356,7 @@ function effectiveGranularity(active: ActiveInteraction): ActiveInteraction['gra
 function withFocus(
   active: ActiveInteraction,
   value: string,
-  source: 'suggestion' | 'other'
+  source: 'suggestion' | 'other' | 'question'
 ): ActiveInteraction {
   const local = active.selection.indexOf(value);
   const start = local >= 0 && active.selectionStart !== undefined
@@ -1067,6 +1410,20 @@ export function choiceForSelection(target: TargetSentence | null, selection: str
  * Task-A free highlights: the layer-1/2 MCQ is restored from `active.activeChoice`
  * (persisted on the participant record). Layer 3 falls back to `choiceForSelection`.
  */
+/**
+ * v5.12: a reader may drop a mistaken highlight and select again, but only before they have
+ * submitted an answer and before any explanation is shown. Both arms can cancel at the
+ * 「想問什麼」 step; the socratic arm can also cancel at layer 1 until its first answer. The
+ * direct arm reaches the explanation right after that step, so it has nothing later to cancel.
+ * An explanation is never shown in a cancelled interaction, so cancelling cannot be used to
+ * preview answers.
+ */
+export function isCancellable(active: ActiveInteraction): boolean {
+  if (active.answerMode !== 'open') return false;
+  if (active.perspectivePending) return true;
+  return active.ladder.step === 'layer1' && (active.ladder.reasonRejectionsTotal ?? 0) === 0;
+}
+
 export function pendingTurnFor(
   p: Participant,
   lastSystemText: string
@@ -1078,6 +1435,19 @@ export function pendingTurnFor(
 } | null {
   const active = p.active;
   if (!active) return null;
+  if (active.answerMode === 'open') {
+    if (active.focusPending) {
+      return { kind: 'focus', text: lastSystemText || '你主要想問這段文字裡的哪一個字或詞？請自行輸入反白範圍內的字詞。' };
+    }
+    if (active.perspectivePending) {
+      return { kind: 'perspective', text: lastSystemText || PERSPECTIVE_PROMPT };
+    }
+    if (['layer1', 'layer2', 'layer3_choice'].includes(active.ladder.step)) {
+      return { kind: 'question', text: active.pendingQuestion ?? lastSystemText };
+    }
+    if (active.ladder.step === 'explanation') return { kind: 'explanation', text: lastSystemText };
+    return null;
+  }
   if (active.focusPending && active.focusOptions) {
     return {
       kind: 'focus',

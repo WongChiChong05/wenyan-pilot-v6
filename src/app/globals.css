@@ -93,29 +93,6 @@
 
 /* Inline unlock button, sits right after the highlighted span so the reader
    never has to hunt for it in the sidebar. */
-.inline-unlock {
-  display: inline-block;
-  margin: 0 6px;
-  padding: 2px 8px;
-  font-size: 13px;
-  line-height: 1.4;
-  vertical-align: baseline;
-  background: #2f6f2f;
-  color: #fff;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  letter-spacing: 0;
-  -webkit-user-select: none;
-  user-select: none;
-}
-.inline-unlock:hover {
-  background: #245524;
-}
-.inline-unlock:focus-visible {
-  outline: 2px solid #d6a100;
-  outline-offset: 2px;
-}
 
 .passage-body::selection,
 .passage-body ::selection {
@@ -278,4 +255,21 @@
   .scale-options {
     grid-template-columns: repeat(3, minmax(80px, 1fr));
   }
+}
+
+/* v5.12: shown under the composer until the reader submits a first answer */
+.cancel-selection {
+  display: block;
+  margin-top: 8px;
+  padding: 2px 0;
+  font-size: 13px;
+  background: none;
+  border: none;
+  color: #666;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.cancel-selection:disabled {
+  cursor: default;
+  opacity: 0.5;
 }

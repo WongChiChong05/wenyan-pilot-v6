@@ -5,7 +5,8 @@ import { ApiError, delayedFlag, insist, object, string, token } from './api';
 import { CONFIG } from './config';
 import { cognitiveLoadMeans, validCognitiveLoadRatings, type CognitiveLoadRatings } from './cognitiveLoad';
 import { validateContent } from './contentValidation';
-import { Engine, nextStage, pendingTurnFor, stageLimits } from './engine';
+import { Engine, isCancellable, nextStage, pendingTurnFor, stageLimits } from './engine';
+import { focusOccursInSelection } from './focus';
 import { lowerBoundApplies, lowerBoundMet } from './highlight';
 import { assignArm, stratumOf } from './randomize';
 import { scoreQuiz, type SubmittedAnswer } from './scoring';
@@ -189,23 +190,36 @@ export async function assist(store: Store, body: Body) {
   insist(p.active, 'no open interaction', 409);
   // Expected turn prevents a retry or a stale browser tab from answering the next rung.
   insist(body.interactionId === p.active.interactionId && body.turnIndex === p.active.turnIndex, 'stale interaction; reload state', 409);
+  if (body.action === 'cancel') {
+    insist(isCancellable(p.active), 'cannot cancel after answering', 409);
+    return engine.cancel(p);
+  }
   if (body.action === 'read_done') {
     insist(p.active.ladder.step === 'explanation', 'explanation not yet shown', 409);
     return engine.reply(p, { kind: 'read_done' });
   }
-  insist(p.arm === 'socratic', 'reader turns unavailable', 409);
+  // v5.9: both AI arms type a focus word and a perspective; only the socratic arm answers.
+  insist(p.arm !== 'control', 'reader turns unavailable', 409);
+  if (body.action === 'perspective') {
+    insist(pendingTurnFor(p, '')?.kind === 'perspective', 'perspective entry unavailable', 409);
+    const value = body.value === undefined || body.value === null ? '' : string(body.value, 'perspective', 200);
+    return engine.reply(p, { kind: 'perspective', value });
+  }
   if (body.action === 'focus') {
     const current = pendingTurnFor(p, '');
-    insist(current?.kind === 'focus' && current.focus, 'focus choice unavailable', 409);
+    insist(current?.kind === 'focus', 'focus choice unavailable', 409);
     const source = body.source === 'other' ? 'other' : body.source === 'suggestion' ? 'suggestion' : null;
     insist(source, 'invalid focus source');
-    return engine.reply(p, {
-      kind: 'focus',
-      value: string(body.value, 'focus', 12),
-      source,
-    });
+    insist(p.active.answerMode !== 'open' || source === 'other', 'focus suggestion unavailable', 409);
+    const value = string(body.value, 'focus', 12);
+    // A client-visible 400 instead of an engine 500: the reader typed something that is
+    // not part of the highlight (often a question). The UI explains what to type.
+    insist(focusOccursInSelection(p.active.selection, value), 'focus must occur in selection');
+    return engine.reply(p, { kind: 'focus', value, source });
   }
+  insist(p.arm === 'socratic', 'reader turns unavailable', 409);
   if (body.action === 'choice') {
+    insist(p.active.answerMode !== 'open', 'choice unavailable', 409);
     const current = pendingTurnFor(p, '');
     insist(current?.choice && ['choice', 'reject'].includes(current.kind), 'choice unavailable', 409);
     insist(Number.isInteger(body.index) && Number(body.index) >= 0 && Number(body.index) < current.choice.options.length, 'invalid choice index');
@@ -213,7 +227,10 @@ export async function assist(store: Store, body: Body) {
   }
   if (body.action === 'answer') {
     insist(pendingTurnFor(p, '')?.kind === 'question', 'text answer unavailable', 409);
-    return engine.reply(p, { kind: 'answer', text: string(body.text, 'answer') });
+    const text = string(body.text, 'answer');
+    const reason = p.active.answerMode === 'open' ? string(body.reason, 'reason') : undefined;
+    insist(text.trim().length > 0 && (p.active.answerMode !== 'open' || reason!.trim().length > 0), 'answer and reason required');
+    return engine.reply(p, { kind: 'answer', text, reason });
   }
   throw new ApiError(400, 'unknown action');
 }
@@ -267,5 +284,5 @@ export async function readState(store: Store, value: string, delayed: boolean) {
   const rows = p.active ? await store.listInteractions(p.id) : [];
   const last = rows.filter(r => r.interactionId === p!.active?.interactionId && r.actor === 'system').at(-1);
   return { ...view, elapsedSeconds: elapsed, seconds: { ...view.seconds, max: Math.max(0, Math.ceil(view.seconds.max - elapsed)) },
-    ...(p.active ? { pendingTurn: { ...pendingTurnFor(p, last?.text ?? ''), interactionId: p.active.interactionId, turnIndex: p.active.turnIndex } } : {}) };
+    ...(p.active ? { pendingTurn: { ...pendingTurnFor(p, last?.text ?? ''), interactionId: p.active.interactionId, turnIndex: p.active.turnIndex, cancellable: isCancellable(p.active) } } : {}) };
 }

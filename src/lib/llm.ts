@@ -198,6 +198,14 @@ export function getProvider(): LlmProvider {
       const options = [...new Set([...selection.replace(/[^\u3400-\u9fff]/gu, '')])].slice(0, 4);
       return JSON.stringify({ options });
     }
+    if (system.includes('只產生目前指定層次的一個開放式問題')) {
+      return JSON.stringify({
+        type: 'question',
+        text: user.includes('目前在第 2 層')
+          ? '換看相鄰一句：哪一處線索可以檢查你剛才的判斷？'
+          : '對照反白文字與前後文，你看到哪些可以互相檢查的線索？',
+      });
+    }
     // Task-A shape: every socratic turn is a MCQ. The mock returns three neutral
     // observation options so it survives leak-checking and structure validation
     // and passes through as a normal generated turn, not the fallback.

@@ -2,476 +2,349 @@ import { describe, expect, it } from 'vitest';
 import { LEARNING_PASSAGE } from '../src/content/passages';
 import { Engine, pendingTurnFor } from '../src/lib/engine';
 import { MockProvider } from '../src/lib/llm';
-import { FALLBACK_SOCRATIC_MCQ } from '../src/lib/prompts';
+import { deriveFocus } from '../src/lib/focus';
 import { MemoryStore, makeParticipant } from './memoryStore';
 
-/**
- * A model that answers every prompt. Task-A: every socratic reply must include
- * options and answerIndex, so the mock returns the same three neutral observation
- * options each time. They survive the leak check + structural check and pass
- * through as a normal generated turn (not the fallback).
- */
-const chatty = new MockProvider((system, user) => {
+const TARGET = LEARNING_PASSAGE.targets[0];
+const question = '對照選取文字與前後文，你看到哪些可以互相檢查的線索？';
+const chatty = new MockProvider((system) => {
   if (system.includes('判斷一段中文回答')) return JSON.stringify({ verdict: 'accept' });
-  if (system.includes('是否與參考答案一致')) return JSON.stringify({ correct: false });
   if (system.includes('解說者')) return JSON.stringify({ type: 'explain', text: '這裡是解釋。' });
-  if (system.includes('可能想問的字或詞')) {
-    const selection = user.match(/讀者反白：「([^」]+)」/)?.[1] ?? '';
-    return JSON.stringify({ options: [...new Set([...selection.replace(/[^\u3400-\u9fff]/gu, '')])].slice(0, 4) });
-  }
-  return JSON.stringify({
-    type: 'question',
-    strategy: 'C',
-    text: '選取範圍前後有哪些線索？',
-    options: FALLBACK_SOCRATIC_MCQ.options,
-    answerIndex: 0,
-  });
+  return JSON.stringify({ type: 'question', text: question });
 });
 
-const TARGET = LEARNING_PASSAGE.targets[0]; // 以鐵如意擊之
-
-const L1 = TARGET.layer1Choice!;
-const L2 = TARGET.layer2Choice!;
-const other = (i: number) => (i === 0 ? 1 : 0);
-
-async function startReady(
-  engine: Engine,
-  store: MemoryStore,
-  p: ReturnType<typeof makeParticipant>,
-  selection: string
-) {
+async function ready(engine: Engine, store: MemoryStore, selection: string, perspective = '') {
+  const p = makeParticipant('socratic');
+  await store.createParticipant(p);
   let turn = await engine.startAssist(p, selection);
   if (turn.kind === 'focus') {
-    const value = turn.focus?.options[0];
-    if (!value) throw new Error('focus turn must include suggestions');
     turn = await engine.reply((await store.getParticipant(p.id))!, {
-      kind: 'focus', value, source: 'suggestion',
+      kind: 'focus', value: '不平', source: 'other',
     });
   }
-  return turn;
+  if (turn.kind === 'perspective') {
+    turn = await engine.reply((await store.getParticipant(p.id))!, { kind: 'perspective', value: perspective });
+  }
+  return { p, turn };
 }
 
-describe('socratic arm: multiple choice + a required reason on every rung', () => {
-  it('asks the reader to choose a focus for a multi-word free highlight', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
-    const engine = new Engine(store, chatty);
-    const focus = await engine.startAssist(p, '異於常味');
-    expect(focus.kind).toBe('focus');
-    expect(focus.focus?.options.length).toBeGreaterThan(1);
+/** Free highlight: start, then answer the perspective prompt (empty = default). */
+async function startFree(engine: Engine, store: MemoryStore, p: ReturnType<typeof makeParticipant>, selection: string, perspective = '') {
+  const first = await engine.startAssist(p, selection);
+  expect(first.kind).toBe('perspective');
+  return engine.reply((await store.getParticipant(p.id))!, { kind: 'perspective', value: perspective });
+}
 
-    const turn = await engine.reply((await store.getParticipant(p.id))!, {
-      kind: 'focus', value: '常味', source: 'other',
+async function answer(engine: Engine, store: MemoryStore, id: string, reason = '因為前文有不平') {
+  return engine.reply((await store.getParticipant(id))!, {
+    kind: 'answer', text: '我認為與前文相連', reason,
+  });
+}
+
+describe('Socratic arm: open answer and reason', () => {
+  it('asks a target question without options or answer key', async () => {
+    const store = new MemoryStore(); const engine = new Engine(store, chatty);
+    const { p, turn } = await ready(engine, store, '擊之');
+    expect(turn.kind).toBe('question');
+    expect(turn.text).toBe(TARGET.layer1);
+    expect(turn.choice).toBeUndefined();
+    expect((await store.getParticipant(p.id))!.active?.answerMode).toBe('open');
+  });
+
+  it('uses all three questions even when the written answer is wrong', async () => {
+    const store = new MemoryStore(); const engine = new Engine(store, chatty);
+    const { p } = await ready(engine, store, '擊之');
+    let turn = await engine.reply((await store.getParticipant(p.id))!, {
+      kind: 'answer', text: '完全錯誤的回答', reason: '因為原文寫擊之',
     });
-    expect(turn.kind).toBe('choice');
+    expect(turn.kind).toBe('question'); expect(turn.text).toBe(TARGET.layer2);
+    turn = await answer(engine, store, p.id, '因為原文寫擊之');
+    expect(turn.kind).toBe('question'); expect(turn.choice).toBeUndefined();
+    turn = await answer(engine, store, p.id, '因為原文寫擊之');
+    expect(turn.kind).toBe('explanation'); expect(turn.text).toBe(TARGET.explanation);
+    expect((await store.getParticipant(p.id))!.active?.ladder.step).toBe('explanation');
+    const done = await engine.reply((await store.getParticipant(p.id))!, { kind: 'read_done' });
+    expect(done.completed).toBe(true);
+    expect((await store.getParticipant(p.id))!.completedTargets).toEqual(['TS1']);
+  });
+
+  it('rejects an empty answer, an empty reason, and a choice payload', async () => {
+    const store = new MemoryStore(); const engine = new Engine(store, chatty);
+    const { p } = await ready(engine, store, '擊之');
+    const current = (await store.getParticipant(p.id))!;
+    await expect(engine.reply(current, { kind: 'answer', text: '', reason: '因為原文有擊' })).rejects.toThrow();
+    await expect(engine.reply(current, { kind: 'answer', text: '我的判斷', reason: '' })).rejects.toThrow();
+    await expect(engine.reply(current, { kind: 'answer', text: '不知道', reason: '因為原文有擊' })).rejects.toThrow();
+    await expect(engine.reply(current, { kind: 'choice', index: 0, reason: '因為原文有擊' })).rejects.toThrow('open answer required');
+  });
+
+  it('keeps the current question when the reason is contentless', async () => {
+    const store = new MemoryStore(); const engine = new Engine(store, chatty);
+    const { p } = await ready(engine, store, '擊之');
+    const turn = await answer(engine, store, p.id, '猜的');
+    expect(turn.kind).toBe('question');
+    expect((await store.getParticipant(p.id))!.active?.ladder.step).toBe('layer1');
+    expect(pendingTurnFor((await store.getParticipant(p.id))!, '')?.text).toBe(TARGET.layer1);
+  });
+
+  it('does not advance after repeated contentless reasons', async () => {
+    const store = new MemoryStore(); const engine = new Engine(store, chatty);
+    const { p } = await ready(engine, store, '擊之');
+    await answer(engine, store, p.id, '猜的');
+    const turn = await answer(engine, store, p.id, '猜的');
+    expect(turn.kind).toBe('question');
+    expect((await store.getParticipant(p.id))!.active?.ladder.step).toBe('layer1');
+    expect((await store.getParticipant(p.id))!.active?.ladder.reasonRejectionsTotal).toBe(2);
+  });
+
+  it('derives the focus word from a typed question for a long free highlight', async () => {
+    const store = new MemoryStore(); const engine = new Engine(store, chatty);
+    const { p, turn } = await ready(engine, store, '帝甚不平', '「不平」是什麼意思');
+    expect(turn.kind).toBe('question'); expect(turn.choice).toBeUndefined();
     const active = (await store.getParticipant(p.id))!.active!;
-    expect(active.selection).toBe('異於常味');
-    expect(active.focusSelection).toBe('常味');
-    expect(active.focusSource).toBe('other');
-    expect(store.events.some(event => event.event === 'focus_selected')).toBe(true);
+    expect(active.selection).toBe('帝甚不平');
+    expect(active.focusSelection).toBe('不平');
+    expect(active.focusSource).toBe('question');
+    expect(store.events.find(e => e.event === 'perspective_set')?.payload.derivedFocus).toBe('不平');
   });
 
-  it('does not let another ladder action bypass a pending focus choice', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
-    const engine = new Engine(store, chatty);
-    await engine.startAssist(p, '異於常味');
-    let message = '';
-    try {
-      await engine.reply((await store.getParticipant(p.id))!, {
-        kind: 'choice', index: 0, reason: '因為原文如此',
-      });
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
-    expect(message).toBe('focus choice required');
+  it('does not let a reply bypass the question entry', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic');
+    await store.createParticipant(p); const engine = new Engine(store, chatty);
+    const turn = await engine.startAssist(p, '帝甚不平');
+    expect(turn.kind).toBe('perspective'); expect(turn.focus).toBeUndefined();
+    await expect(answer(engine, store, p.id)).rejects.toThrow('perspective entry required');
   });
 
-  it('walks layer1 -> layer2 -> bottom-out when each pick is wrong', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
-    const engine = new Engine(store, chatty);
-
-    const t1 = await engine.startAssist(p, '擊之');
-    expect(t1.kind).toBe('choice');
-    expect(t1.text).toBe(TARGET.layer1);
-    expect(t1.choice?.options).toEqual(L1.options);
-
-    let cur = (await store.getParticipant(p.id))!;
-    const t2 = await engine.reply(cur, {
-      kind: 'choice',
-      index: other(L1.answerIndex),
-      reason: '因為前面寫了鐵如意',
-    });
-    expect(t2.kind).toBe('choice');
-    expect(t2.text).toBe(TARGET.layer2);
-    expect(t2.choice?.options).toEqual(L2.options);
-
-    cur = (await store.getParticipant(p.id))!;
-    const t3 = await engine.reply(cur, {
-      kind: 'choice',
-      index: other(L2.answerIndex),
-      reason: '因為後面接著應手而碎',
-    });
-    expect(t3.kind).toBe('choice');
-    expect(t3.choice?.options).toEqual(TARGET.choice.options);
-
-    cur = (await store.getParticipant(p.id))!;
-    const t4 = await engine.reply(cur, { kind: 'choice', index: 0, reason: '感覺' });
-    expect(t4.kind).toBe('reject'); // contentless reason
-    expect(t4.choice?.options).toEqual(TARGET.choice.options); // options are resent
-
-    cur = (await store.getParticipant(p.id))!;
-    const t5 = await engine.reply(cur, { kind: 'choice', index: 0, reason: '因為前面是擊' });
-    expect(t5.kind).toBe('explanation');
-    expect(t5.text).toBe(TARGET.explanation);
-
-    cur = (await store.getParticipant(p.id))!;
-    const t6 = await engine.reply(cur, { kind: 'read_done' });
-    expect(t6.completed).toBe(true);
-    const after = (await store.getParticipant(p.id))!;
-    expect(after.completedTargets).toEqual(['TS1']);
-    expect(after.active).toBeNull();
+  it('generates an open question and never persists options for a free highlight', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic');
+    await store.createParticipant(p); const engine = new Engine(store, chatty);
+    const turn = await startFree(engine, store, p, '平');
+    expect(turn.kind).toBe('question'); expect(turn.text).toBe(question);
+    expect(turn.choice).toBeUndefined();
+    expect((await store.getParticipant(p.id))!.active?.activeChoice).toBeUndefined();
+    const row = store.interactions.find(r => r.type === 'question')!;
+    expect(row.generatedOptions).toBeUndefined();
+    expect(row.generatedAnswerIndex).toBeUndefined();
   });
 
-  it('lets a correct pick with a real reason finish at layer 1', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
-    const engine = new Engine(store, chatty);
-    await engine.startAssist(p, '擊之');
-    const cur = (await store.getParticipant(p.id))!;
-    const turn = await engine.reply(cur, {
-      kind: 'choice',
-      index: L1.answerIndex,
-      reason: '因為擊是敲這個動作',
-    });
-    expect(turn.kind).toBe('explanation');
-    const after = (await store.getParticipant(p.id))!;
-    expect(after.active?.ladder.correctAtLayer).toBe(1);
+  it('retries a generated question once, then uses an open fallback', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic');
+    await store.createParticipant(p); let calls = 0;
+    const engine = new Engine(store, new MockProvider(() => { calls += 1; return 'not JSON'; }));
+    const turn = await startFree(engine, store, p, '平');
+    expect(calls).toBe(2); expect(turn.kind).toBe('question');
+    expect(turn.choice).toBeUndefined(); expect(turn.degraded).toBe(true);
+    expect(store.events.some(e => e.event === 'llm_failure')).toBe(true);
   });
 
-  // THE GUESSING GUARD. A 3-option choice is right one time in three by luck; if a
-  // correct pick alone opened the explanation, a third of readers would skip the ladder
-  // entirely and the questioning manipulation would not have happened for them.
-  it('does not open the explanation on a lucky pick with no reason', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
+  it('rejects model-generated options, even if the question itself is harmless', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic');
     await store.createParticipant(p);
-    const engine = new Engine(store, chatty);
-    await engine.startAssist(p, '擊之');
-    const cur = (await store.getParticipant(p.id))!;
-    const turn = await engine.reply(cur, { kind: 'choice', index: L1.answerIndex, reason: '猜的' });
-    expect(turn.kind).toBe('reject');
-    expect(turn.choice?.options).toEqual(L1.options);
-    const after = (await store.getParticipant(p.id))!;
-    expect(after.active?.ladder.step).toBe('layer1'); // still on the same rung
+    const engine = new Engine(store, new MockProvider(() => JSON.stringify({
+      type: 'question', text: question, options: ['一', '二', '三'], answerIndex: 0,
+    })));
+    const turn = await startFree(engine, store, p, '平');
+    expect(turn.degraded).toBe(true); expect(turn.choice).toBeUndefined();
+    expect(store.interactions.find(r => r.type === 'question')?.leakFlags).toContain('unexpected_options');
   });
 
-  // Task A: free highlights are now MCQ too. The generated MCQ shape is preserved and
-  // stored on `active.activeChoice` so the reply is judged against the model's answer.
-  it('gives a free highlight a generated MCQ at layer 1', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
+  it('blocks a question that leaks an answer', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic');
     await store.createParticipant(p);
-    const engine = new Engine(store, chatty);
-    const turn = await startReady(engine, store, p, '帝甚不平');
-    expect(turn.kind).toBe('choice');
-    expect(turn.choice?.options).toEqual(FALLBACK_SOCRATIC_MCQ.options);
-    const after = (await store.getParticipant(p.id))!;
-    expect(after.active?.activeChoice?.options).toEqual(FALLBACK_SOCRATIC_MCQ.options);
-    expect(after.active?.activeChoice?.degraded).toBe(false);
-  });
-
-  // Model's answerIndex is trusted at run time for free highlights (Task-A design).
-  it('lets a free highlight end early when the pick matches the model answer + a real reason', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
-    const engine = new Engine(store, chatty);
-    await startReady(engine, store, p, '帝甚不平');
-    const cur = (await store.getParticipant(p.id))!;
-    const turn = await engine.reply(cur, {
-      kind: 'choice',
-      index: 0, // matches chatty's answerIndex
-      reason: '因為前面說了以人乳飲豚',
-    });
-    expect(turn.kind).toBe('explanation');
-  });
-
-  // A wrong pick on the free-highlight MCQ descends to layer 2 (also a generated MCQ),
-  // then layer 3 (the generic bottom-out).
-  it('walks a free highlight down the ladder to the bottom-out choice', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
-    const engine = new Engine(store, chatty);
-    const t1 = await startReady(engine, store, p, '帝甚不平');
-    expect(t1.kind).toBe('choice');
-
-    let cur = (await store.getParticipant(p.id))!;
-    const t2 = await engine.reply(cur, { kind: 'choice', index: 1, reason: '因為前面說了以人乳飲豚' });
-    expect(t2.kind).toBe('choice'); // layer 2, still a generated MCQ
-    expect(t2.choice?.options.length).toBe(3);
-
-    cur = (await store.getParticipant(p.id))!;
-    const t3 = await engine.reply(cur, { kind: 'choice', index: 1, reason: '因為前面說了以人乳飲豚' });
-    expect(t3.kind).toBe('choice'); // layer 3, generic bottom-out
-    expect(t3.choice?.options.length).toBe(3);
+    const engine = new Engine(store, new MockProvider(() => JSON.stringify({
+      type: 'question', text: '「平」的意思是安定，對不對？',
+    })));
+    const turn = await startFree(engine, store, p, '平');
+    expect(turn.text).not.toContain('意思是'); expect(turn.degraded).toBe(true);
   });
 });
 
-describe('completion transport', () => {
-  it('does not call the model again when the reader clicks read_done', async () => {
+describe('other arms and transport', () => {
+  it('direct arm receives the exact target explanation', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('direct');
+    await store.createParticipant(p);
+    const turn = await new Engine(store, chatty).startAssist(p, '擊之');
+    expect(turn.kind).toBe('explanation'); expect(turn.text).toBe(TARGET.explanation);
+  });
+
+  it('read_done does not call the model again', async () => {
     let calls = 0;
-    const provider = new MockProvider((system) => {
-      calls += 1;
-      if (system.includes('解說者')) {
-        return JSON.stringify({ type: 'explain', text: '這裡是模型產生的解釋。' });
-      }
-      return JSON.stringify({ verdict: 'accept' });
-    });
-    const store = new MemoryStore();
-    const p = makeParticipant('direct');
-    await store.createParticipant(p);
+    const provider = new MockProvider(() => { calls += 1; return JSON.stringify({ type: 'explain', text: '這裡是解釋。' }); });
+    const store = new MemoryStore(); const p = makeParticipant('direct'); await store.createParticipant(p);
     const engine = new Engine(store, provider);
-    const turn = await engine.startAssist(p, '異於常味');
-    expect(turn.kind).toBe('explanation');
+    await engine.startAssist(p, '異於常味');
+    await engine.reply((await store.getParticipant(p.id))!, { kind: 'perspective', value: '' });
     expect(calls).toBe(1);
-
-    const completed = await engine.reply((await store.getParticipant(p.id))!, { kind: 'read_done' });
-    expect(completed.completed).toBe(true);
+    await engine.reply((await store.getParticipant(p.id))!, { kind: 'read_done' });
     expect(calls).toBe(1);
   });
-});
 
-describe('arm symmetry and the control arm', () => {
-  it('gives the direct arm the SAME explanation text as the socratic arm', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('direct');
-    await store.createParticipant(p);
-    const engine = new Engine(store, chatty);
-    const turn = await engine.startAssist(p, '擊之');
-    expect(turn.kind).toBe('explanation');
-    expect(turn.text).toBe(TARGET.explanation);
+  it('control records a mark without a response or lower-bound gate', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('control'); await store.createParticipant(p);
+    const turn = await new Engine(store, chatty).startAssist(p, '擊之');
+    expect(turn.kind).toBe('none'); expect(turn.completed).toBe(true); expect(turn.lowerBoundMet).toBe(true);
+    expect(store.interactions.filter(r => r.actor === 'system')).toHaveLength(0);
   });
 
-  it('records the control arm mark without any response, and counts it', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('control');
-    await store.createParticipant(p);
+  it('control counts distinct targets once', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('control'); await store.createParticipant(p);
     const engine = new Engine(store, chatty);
-    const turn = await engine.startAssist(p, '擊之');
-    expect(turn.kind).toBe('none');
-    expect(turn.completed).toBe(true);
-    const after = (await store.getParticipant(p.id))!;
-    expect(after.completedTargets).toEqual(['TS1']);
-    expect(store.interactions.filter((r) => r.actor === 'system')).toHaveLength(0);
-  });
-
-  it('records each target sentence exactly once, without gating anyone', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('control');
-    await store.createParticipant(p);
-    const engine = new Engine(store, chatty);
-    for (const t of LEARNING_PASSAGE.targets) {
-      const cur = (await store.getParticipant(p.id))!;
-      const turn = await engine.startAssist(cur, t.text);
-      expect(turn.lowerBoundMet).toBe(true);
+    for (const target of LEARNING_PASSAGE.targets) {
+      await engine.startAssist((await store.getParticipant(p.id))!, target.text);
     }
-    const again = (await store.getParticipant(p.id))!;
-    await engine.startAssist(again, LEARNING_PASSAGE.targets[0].text);
-    const after = (await store.getParticipant(p.id))!;
-    expect(after.completedTargets.length).toBe(4);
+    await engine.startAssist((await store.getParticipant(p.id))!, TARGET.text);
+    expect((await store.getParticipant(p.id))!.completedTargets).toHaveLength(4);
   });
 });
 
-describe('Task-A degraded fallback for free-highlight MCQ', () => {
-  // A model that returns garbage: the engine regenerates once, then falls back
-  // to the fixed generic MCQ. answerIndex on the fallback is null, so no pick can
-  // end the ladder early.
-  it('falls back to the fixed MCQ when the model output cannot be parsed', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
-    const broken = new MockProvider(() => 'not json at all');
-    const engine = new Engine(store, broken);
-    const turn = await engine.startAssist(p, '平'); // free highlight, single character
-    expect(turn.kind).toBe('choice');
-    expect(turn.degraded).toBe(true);
-    expect(turn.choice?.options).toEqual(FALLBACK_SOCRATIC_MCQ.options);
-    expect(store.events.some((e) => e.event === 'llm_failure')).toBe(true);
-  });
-
-  // On the fallback rung, ANY pick with an accepted reason must descend — never end
-  // the ladder early. This is the Task-A design decision that keeps the fallback
-  // from smuggling a fake "correct answer" past the guessing guard.
-  it('never ends the ladder early on a fallback rung, whatever the reader picks', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
-    const broken = new MockProvider(() => 'not json at all');
-    const engine = new Engine(store, broken);
-    await startReady(engine, store, p, '帝甚不平');
-    let cur = (await store.getParticipant(p.id))!;
-    const t2 = await engine.reply(cur, { kind: 'choice', index: 0, reason: '因為前面說了以人乳飲豚' });
-    expect(t2.kind).toBe('choice'); // dropped to layer 2, still not explanation
-    cur = (await store.getParticipant(p.id))!;
-    const t3 = await engine.reply(cur, { kind: 'choice', index: 0, reason: '因為前面說了以人乳飲豚' });
-    expect(t3.kind).toBe('choice'); // dropped to layer 3
-  });
-
-  // Task-A option-level leak-check: a returned option that states a meaning triggers
-  // regeneration; a second leak-through triggers the fallback.
-  it('falls back when generated options themselves leak the meaning', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
-    const leaky = new MockProvider(() =>
-      JSON.stringify({
-        type: 'question',
-        strategy: 'C',
-        text: '看一下這個字在句子什麼位置？',
-        options: ['觀察一', '這裡「之」的意思是珊瑚樹', '觀察三'],
-        answerIndex: 0,
-      })
-    );
-    const engine = new Engine(store, leaky);
-    const turn = await startReady(engine, store, p, '帝甚不平');
-    expect(turn.degraded).toBe(true);
-    expect(turn.choice?.options).toEqual(FALLBACK_SOCRATIC_MCQ.options);
-  });
-
-  // Task-A structural validation: <3 options, empty option, duplicate option, or
-  // answerIndex out of range are all treated the same way as a leak.
-  it('falls back when generated options are structurally invalid', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
-    const bad = new MockProvider(() =>
-      JSON.stringify({
-        type: 'question',
-        text: '看一下這個位置',
-        options: ['a', 'a'],
-        answerIndex: 9,
-      })
-    );
-    const engine = new Engine(store, bad);
-    const turn = await startReady(engine, store, p, '帝甚不平');
-    expect(turn.degraded).toBe(true);
-    expect(turn.choice?.options).toEqual(FALLBACK_SOCRATIC_MCQ.options);
-  });
-
-  // The socratic system prompt regeneration still catches a leaking QUESTION stem
-  // (checked in unit.test.ts too). Here we just verify no leaking text reaches the reader.
-  it('never lets a leaking question stem reach the reader', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
-    const leaky = new MockProvider(() =>
-      JSON.stringify({
-        type: 'question',
-        text: '「之」的意思是珊瑚樹，對不對？',
-        options: FALLBACK_SOCRATIC_MCQ.options,
-        answerIndex: 0,
-      })
-    );
-    const engine = new Engine(store, leaky);
-    const turn = await startReady(engine, store, p, '帝甚不平');
-    expect(turn.text).not.toContain('意思是');
-  });
-});
-
-describe('only the passage body can be highlighted', () => {
-  it('rejects a selection that is not in the learning passage', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
+describe('selection and reload recovery', () => {
+  it('rejects text outside the passage', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic'); await store.createParticipant(p);
     const engine = new Engine(store, chatty);
-    const failed = async (sel: string) => {
-      try {
-        await engine.startAssist(p, sel);
-        return '';
-      } catch (e) {
-        return e instanceof Error ? e.message : 'error';
-      }
-    };
-    expect(await failed('用滑鼠選取你看不懂的地方')).toBe('selection is not part of the passage');
-    expect(await failed('對話紀錄')).toBe('selection is not part of the passage');
-    expect(await failed('   ')).toBe('selection is not part of the passage');
+    await expect(engine.startAssist(p, '用滑鼠選取你看不懂的地方')).rejects.toThrow();
+    await expect(engine.startAssist(p, '   ')).rejects.toThrow();
   });
-  it('accepts a selection that is in the passage even with stray whitespace', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
+
+  it('preserves the reader selection verbatim', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic'); await store.createParticipant(p);
     const engine = new Engine(store, chatty);
     const turn = await engine.startAssist(p, ' 擊之 ');
-    expect(turn.kind).toBe('choice'); // 擊之 is inside TS1, which has pre-written options
+    expect(turn.kind).toBe('question');
+    expect((await store.getParticipant(p.id))!.active?.selection).toBe(' 擊之 ');
   });
-});
 
-// Task-2 UNDO of the old snap: the reader's selection must be stored verbatim,
-// whatever the length. classifyGranularity still produces a label for the log.
-describe('selection is stored verbatim (task-2 undo of snap-to-sentence)', () => {
-  it('stores a multi-character drag exactly as the reader made it', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
+  it('does not snap a partial or whole target sentence', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic'); await store.createParticipant(p);
     const engine = new Engine(store, chatty);
     await engine.startAssist(p, '以鐵如意擊');
-    const after = (await store.getParticipant(p.id))!;
-    expect(after.active?.selection).toBe('以鐵如意擊');
-    // still resolves the target because '以鐵如意擊' is a substring of TS1
-    expect(after.active?.targetId).toBe('TS1');
-    // granularity is a recorded label, not a rewrite
-    expect(after.active?.granularity).toBe('sentence');
+    const active = (await store.getParticipant(p.id))!.active!;
+    expect(active.selection).toBe('以鐵如意擊'); expect(active.targetId).toBe('TS1');
+    expect(active.granularity).toBe('sentence');
   });
 
-  it('stores a whole clause exactly as the reader made it', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
+  it('restores the exact open question after reload', async () => {
+    const store = new MemoryStore(); const engine = new Engine(store, chatty);
+    const { p } = await ready(engine, store, '擊之');
+    const pending = pendingTurnFor((await store.getParticipant(p.id))!, '');
+    expect(pending?.kind).toBe('question'); expect(pending?.text).toBe(TARGET.layer1);
+    expect(pending?.choice).toBeUndefined();
+  });
+
+  it('restores the question prompt after reload, without suggestions', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic'); await store.createParticipant(p);
     const engine = new Engine(store, chatty);
-    await engine.startAssist(p, '愷既惋惜，又以為疾己之寶');
-    const after = (await store.getParticipant(p.id))!;
-    expect(after.active?.selection).toBe('愷既惋惜，又以為疾己之寶');
-    expect(after.active?.granularity).toBe('sentence');
+    await engine.startAssist(p, '帝甚不平');
+    const pending = pendingTurnFor((await store.getParticipant(p.id))!, '');
+    expect(pending?.kind).toBe('perspective'); expect(pending?.focus).toBeUndefined();
+  });
+
+  it('restores the generated open question after reload', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic'); await store.createParticipant(p);
+    const engine = new Engine(store, chatty);
+    await startFree(engine, store, p, '平');
+    const pending = pendingTurnFor((await store.getParticipant(p.id))!, '');
+    expect(pending?.kind).toBe('question'); expect(pending?.text).toBe(question);
+  });
+
+  it('has no pending turn without an active interaction', () => {
+    expect(pendingTurnFor(makeParticipant('control'), '')).toBeNull();
   });
 });
 
-describe('reload recovery', () => {
-  it('rebuilds the open turn so a refreshed reader is not locked out', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
+describe('v5.9 perspective step and strategy removal', () => {
+  it('keeps the whole highlight when the typed question names no word from it', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic'); await store.createParticipant(p);
     const engine = new Engine(store, chatty);
-    await engine.startAssist(p, '擊之');
-    const cur = (await store.getParticipant(p.id))!;
-    const pending = pendingTurnFor(cur, TARGET.layer1);
-    expect(pending?.kind).toBe('choice');
-    expect(pending?.choice?.options).toEqual(L1.options);
-  });
-  it('returns null when nothing is open', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('control');
-    await store.createParticipant(p);
-    expect(pendingTurnFor(p, '')).toBeNull();
+    const first = await engine.startAssist(p, '帝甚不平');
+    expect(first.kind).toBe('perspective'); expect(first.choice).toBeUndefined();
+    await engine.reply((await store.getParticipant(p.id))!, { kind: 'perspective', value: '這句在說什麼' });
+    const active = (await store.getParticipant(p.id))!.active!;
+    expect(active.focusSelection).toBeUndefined();
+    expect(active.perspective).toBe('這句在說什麼');
   });
 
-  // Task-A: a reload on a free-highlight MCQ must reconstruct the exact options the
-  // reader was looking at, using the persisted activeChoice.
-  it('rebuilds a free-highlight generated MCQ from active.activeChoice', async () => {
-    const store = new MemoryStore();
-    const p = makeParticipant('socratic');
-    await store.createParticipant(p);
-    const engine = new Engine(store, chatty);
-    await startReady(engine, store, p, '帝甚不平');
-    const cur = (await store.getParticipant(p.id))!;
-    const pending = pendingTurnFor(cur, '這個字在句子什麼位置？');
-    expect(pending?.kind).toBe('choice');
-    expect(pending?.choice?.options).toEqual(FALLBACK_SOCRATIC_MCQ.options);
+  it('derives a focus deterministically from free text', () => {
+    const sel = '婢子百餘人，皆綾羅絝𧟌，以手擎飲食。烝㹠肥美，異於常味。';
+    expect(deriveFocus(sel, '以手擎飲食 what is that mean')).toBe('以手擎飲食');
+    expect(deriveFocus(sel, '「擎」是什麼意思')).toBe('擎');
+    expect(deriveFocus(sel, '擎是什麼')).toBe('擎');
+    expect(deriveFocus('帝甚不平', '為什麼不高興')).toBeNull();
+    expect(deriveFocus('帝甚不平', '帝甚不平是什麼意思')).toBeNull();
+    expect(deriveFocus('帝甚不平', '')).toBeNull();
+  });
+
+  it('defaults an empty perspective to meaning and asks for meaning at the last rung', async () => {
+    const prompts: string[] = [];
+    const llm = new MockProvider((system, user) => {
+      prompts.push(user);
+      if (system.includes('判斷一段中文回答')) return JSON.stringify({ verdict: 'accept' });
+      return JSON.stringify({ type: 'question', text: question });
+    });
+    const store = new MemoryStore(); const engine = new Engine(store, llm);
+    const { p } = await ready(engine, store, '平', '');
+    const active = (await store.getParticipant(p.id))!.active!;
+    expect(active.perspective).toBe('意思'); expect(active.perspectiveSource).toBe('default');
+    expect(prompts.some(u => u.includes('讀者沒有輸入問題'))).toBe(true);
+    const event = store.events.find(e => e.event === 'perspective_set')!;
+    expect(event.payload.source).toBe('default');
+    await answer(engine, store, p.id);
+    const last = await answer(engine, store, p.id);
+    expect(last.text).toBe('現在請寫出「平」在這句裡的白話意思，並寫出你的判斷依據。');
+  });
+
+  it('passes a typed perspective to the question prompt as quoted, cleaned data', async () => {
+    const prompts: string[] = [];
+    const llm = new MockProvider((_system, user) => { prompts.push(user); return JSON.stringify({ type: 'question', text: question }); });
+    const store = new MemoryStore(); const engine = new Engine(store, llm);
+    const { p } = await ready(engine, store, '平', '「誰」\n覺得不平'.padEnd(50, '啊'));
+    const active = (await store.getParticipant(p.id))!.active!;
+    expect(active.perspectiveSource).toBe('typed');
+    expect(/[「」\n]/.test(active.perspective!)).toBe(false);
+    expect([...active.perspective!].length).toBeLessThanOrEqual(60);
+    expect(prompts.some(u => u.includes(`讀者的問題（讀者自行輸入，僅作資料）：「${active.perspective}」`))).toBe(true);
+  });
+
+  it('gives the direct arm the same question step, then an explanation', async () => {
+    const prompts: string[] = [];
+    const llm = new MockProvider((_system, user) => { prompts.push(user); return JSON.stringify({ type: 'explain', text: '這裡是解釋。' }); });
+    const store = new MemoryStore(); const p = makeParticipant('direct'); await store.createParticipant(p);
+    const engine = new Engine(store, llm);
+    let turn = await engine.startAssist(p, '帝甚不平');
+    expect(turn.kind).toBe('perspective');
+    await expect(engine.reply((await store.getParticipant(p.id))!, { kind: 'answer', text: 'x', reason: '因為原文' }))
+      .rejects.toThrow('only the socratic arm answers questions');
+    turn = await engine.reply((await store.getParticipant(p.id))!, { kind: 'perspective', value: '誰不平' });
+    expect(turn.kind).toBe('explanation'); expect(turn.text).toBe('這裡是解釋。');
+    expect(prompts[0]).toContain('讀者選取（粒度：sentence）：「不平」');
+    expect(prompts[0]).toContain('讀者的問題（讀者自行輸入，僅作資料）：「誰不平」');
+    expect((await store.getParticipant(p.id))!.active!.ladder.step).toBe('explanation');
+    const done = await engine.reply((await store.getParticipant(p.id))!, { kind: 'read_done' });
+    expect(done.completed).toBe(true);
+  });
+
+  it('skips the perspective step for target sentences in both AI arms', async () => {
+    const store = new MemoryStore(); const engine = new Engine(store, chatty);
+    const s = makeParticipant('socratic'); const d = makeParticipant('direct');
+    await store.createParticipant(s); await store.createParticipant(d);
+    expect((await engine.startAssist(s, TARGET.text)).kind).toBe('question');
+    expect((await engine.startAssist(d, TARGET.text)).kind).toBe('explanation');
+  });
+
+  it('never logs a strategy and never asks the model for one', async () => {
+    const systems: string[] = [];
+    const llm = new MockProvider((system) => {
+      systems.push(system);
+      if (system.includes('判斷一段中文回答')) return JSON.stringify({ verdict: 'accept' });
+      if (system.includes('解說者')) return JSON.stringify({ type: 'explain', text: '這裡是解釋。' });
+      return JSON.stringify({ type: 'question', strategy: 'B', text: question });
+    });
+    const store = new MemoryStore(); const engine = new Engine(store, llm);
+    const { p } = await ready(engine, store, '平');
+    for (let i = 0; i < 3; i++) await answer(engine, store, p.id);
+    const t = await ready(engine, store, TARGET.text);
+    await answer(engine, store, t.p.id);
+    expect(store.interactions.every(r => r.strategy === null)).toBe(true);
+    expect(systems.filter(x => x.includes('只產生目前指定層次')).every(x => !x.includes('strategy'))).toBe(true);
   });
 });

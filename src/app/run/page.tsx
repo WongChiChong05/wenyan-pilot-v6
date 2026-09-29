@@ -37,6 +37,7 @@ interface StageView {
     text: string;
     choice?: { prompt: string; options: string[] };
     focus?: { options: string[]; allowOther: true };
+    cancellable?: boolean;
   };
   config: { version: string };
 }
@@ -44,7 +45,7 @@ interface StageView {
 interface AssistTurn {
   interactionId: string;
   turnIndex?: number | null;
-  kind: 'focus' | 'question' | 'choice' | 'reject' | 'explanation' | 'none';
+  kind: 'focus' | 'perspective' | 'question' | 'choice' | 'reject' | 'explanation' | 'none';
   text: string;
   choice?: { prompt: string; options: string[] };
   focus?: { options: string[]; allowOther: true };
@@ -54,6 +55,10 @@ interface AssistTurn {
   completedTargetIds: string[];
   degraded?: boolean;
   range?: { start: number; end: number };
+  /** v5.12: the reader dropped this highlight; the passage unlocks at once */
+  cancelled?: boolean;
+  /** v5.12: the reader may still cancel (before any answer, before any explanation) */
+  cancellable?: boolean;
 }
 
 function useToken() {
@@ -363,8 +368,6 @@ function PassageText({
   onSelect,
   locked = false,
   activeRange,
-  showUnlock,
-  onUnlock,
 }: {
   view: StageView;
   token: string;
@@ -374,9 +377,6 @@ function PassageText({
   locked?: boolean;
   /** which character range of `passage.text` is the current open highlight */
   activeRange?: { start: number; end: number } | null;
-  /** render the "解鎖，換下一句" button inline after the highlighted span */
-  showUnlock?: boolean;
-  onUnlock?: () => void;
 }) {
   const passage = view.passage!;
   const annotated = useMemo(() => passage.annotations.map((a) => a.term), [passage.annotations]);
@@ -387,8 +387,8 @@ function PassageText({
   /**
    * The passage is one text node when idle so `window.getSelection()` gives offsets
    * directly. Once an interaction is open, we split it into up to three runs so we
-   * can (a) mark the highlighted span visually and (b) put the inline unlock button
-   * right after it. New selections are then blocked by `locked`.
+   * can mark the highlighted span visually. New selections are blocked by `locked`
+   * until the reader presses 看完了 or cancels (v5.12: no separate unlock step).
    */
   const rangeIsValid =
     activeRange != null &&
@@ -432,19 +432,6 @@ function PassageText({
       >
         {passage.text.slice(activeRange!.start, activeRange!.end)}
       </span>
-      {showUnlock && (
-        <button
-          type="button"
-          className="inline-unlock"
-          onClick={(e) => {
-            e.stopPropagation();
-            onUnlock?.();
-          }}
-          title="這一句已經看完了，按一下就可以問下一句"
-        >
-          解鎖，換下一句 →
-        </button>
-      )}
       {passage.text.slice(activeRange!.end)}
     </>
   ) : (
@@ -589,8 +576,8 @@ function ChatPanel({
   );
 }
 
-/** null = free to highlight; 'open' = conversation running; 'finished' = waiting to unlock */
-type LockState = null | 'open' | 'finished';
+/** null = free to highlight; 'open' = conversation running (v5.12: no 'finished' state) */
+type LockState = null | 'open';
 
 function Reading({
   view,
@@ -612,6 +599,7 @@ function Reading({
           text: view.pendingTurn.text,
           choice: view.pendingTurn.choice,
           focus: view.pendingTurn.focus,
+          cancellable: view.pendingTurn.cancellable,
           completed: false,
           lowerBoundMet: view.lowerBound?.met ?? false,
           completedTargetIds: [],
@@ -620,8 +608,8 @@ function Reading({
   );
   const [input, setInput] = useState('');
   const [choiceIndex, setChoiceIndex] = useState<number | null>(null);
-  const [focusIndex, setFocusIndex] = useState<number | null>(null);
   const [focusOther, setFocusOther] = useState('');
+  const [perspectiveText, setPerspectiveText] = useState('');
   const [reason, setReason] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [notice, setNotice] = useState('');
@@ -683,8 +671,12 @@ function Reading({
       if (!res.ok || data.error) {
         setNotice(
           data.error === 'interaction in progress'
-            ? '目前這一句還沒結束，請先看完再換下一句。'
-            : '沒有送出成功，請再試一次。'
+            ? '目前這一處還沒結束：看完解釋按「看完了」，或在作答前按「取消選取」。'
+            : data.error === 'cannot cancel after answering'
+              ? '已經開始作答，這一處要走完才能換。'
+            : data.error === 'invalid focus' || data.error === 'focus must occur in selection'
+              ? '這裡只輸入反白範圍內的字或詞，例如「擎」。想問的問題，下一步可以自己寫。'
+              : '沒有送出成功，請再試一次。'
         );
         return;
       }
@@ -692,15 +684,17 @@ function Reading({
       setTurn(data);
       setMet(data.lowerBoundMet);
       if (data.completedTargetIds) setDoneIds(data.completedTargetIds);
-      if (data.range) setActiveRange(data.range);
-      // A finished interaction stays locked. Switching sentences is a deliberate act:
-      // the reader presses 解鎖 for it, next to the highlight.
-      setLock(data.completed ? 'finished' : 'open');
-      if (data.completed) setTurn(null);
+      // v5.12: pressing 看完了 (or cancelling) ends the interaction and frees the passage at
+      // once; there is no separate unlock button. While an interaction is open the passage
+      // stays locked, so a stray drag still cannot discard a half-climbed ladder.
+      const finished = data.completed || data.cancelled;
+      setLock(finished ? null : 'open');
+      setActiveRange(finished ? null : data.range ?? null);
+      if (finished) setTurn(null);
       setInput('');
       setChoiceIndex(null);
-      setFocusIndex(null);
       setFocusOther('');
+      setPerspectiveText('');
       setReason('');
       await loadTranscript();
     } finally {
@@ -720,59 +714,62 @@ function Reading({
    */
   const composer = (() => {
     if (turn && turn.kind !== 'none') {
-      if (turn.kind === 'focus' && turn.focus) {
-        const value = focusIndex === -1
-          ? focusOther.trim()
-          : focusIndex === null
-            ? ''
-            : turn.focus.options[focusIndex] ?? '';
+      if (turn.kind === 'focus') {
         return (
           <>
-            {turn.focus.options.map((option, index) => (
-              <p key={option} style={{ margin: '4px 0', fontSize: 14 }}>
-                <label>
-                  <input
-                    type="radio"
-                    name="focus"
-                    checked={focusIndex === index}
-                    onChange={() => setFocusIndex(index)}
-                    disabled={posting}
-                  />
-                  {option}
-                </label>
-              </p>
-            ))}
-            <p style={{ margin: '8px 0 4px', fontSize: 14 }}>
-              <label>
-                <input
-                  type="radio"
-                  name="focus"
-                  checked={focusIndex === -1}
-                  onChange={() => setFocusIndex(-1)}
-                  disabled={posting}
-                />
-                其他
-              </label>
-            </p>
-            {focusIndex === -1 && (
-              <input
-                type="text"
-                style={{ width: '100%', boxSizing: 'border-box', marginBottom: 8 }}
-                value={focusOther}
-                onChange={(event) => setFocusOther(event.target.value)}
-                placeholder="輸入反白範圍內的字或詞"
-                disabled={posting}
-              />
-            )}
+            <label htmlFor="focus-answer">想問的字或詞</label>
+            <input
+              id="focus-answer"
+              type="text"
+              style={{ width: '100%', boxSizing: 'border-box', marginBottom: 8 }}
+              value={focusOther}
+              onChange={(event) => setFocusOther(event.target.value)}
+              placeholder="從反白範圍內挑出字或詞，例如「擎」"
+              maxLength={12}
+              disabled={posting}
+            />
             <button
-              disabled={posting || value.length === 0}
-              onClick={() => void post({
-                action: 'focus',
-                value,
-                source: focusIndex === -1 ? 'other' : 'suggestion',
-              })}
+              disabled={posting || focusOther.trim().length === 0}
+              onClick={() => {
+                // The focus must be characters copied from the highlight. A typed question
+                // ("…what does it mean") belongs in the next step, so say so instead of
+                // letting the server reject it with a generic error.
+                const value = focusOther.trim();
+                const highlighted = activeRange && view.passage?.text
+                  ? view.passage.text.slice(activeRange.start, activeRange.end)
+                  : null;
+                if ([...value].length > 12 || (highlighted !== null && !highlighted.includes(value))) {
+                  setNotice('這裡只輸入反白範圍內的字或詞，例如「擎」。想問的問題，下一步可以自己寫。');
+                  return;
+                }
+                void post({ action: 'focus', value, source: 'other' });
+              }}
             >
               確認
+            </button>
+          </>
+        );
+      }
+      if (turn.kind === 'perspective') {
+        // v5.9: free text only, no suggested options. Empty is allowed: the server then
+        // uses the default perspective (guide towards meaning).
+        return (
+          <>
+            <label htmlFor="perspective-answer">想問什麼</label>
+            <textarea
+              id="perspective-answer"
+              rows={2}
+              style={{ width: '100%', boxSizing: 'border-box', marginBottom: 8 }}
+              value={perspectiveText}
+              onChange={(event) => setPerspectiveText(event.target.value)}
+              placeholder="例如：「擎」是什麼意思？也可以留空"
+              disabled={posting}
+            />
+            <button
+              disabled={posting}
+              onClick={() => void post({ action: 'perspective', value: perspectiveText.trim() })}
+            >
+              繼續
             </button>
           </>
         );
@@ -780,32 +777,31 @@ function Reading({
       if (turn.kind === 'question') {
         return (
           <>
+            <label htmlFor="open-answer">你的答案</label>
             <textarea
+              id="open-answer"
               rows={3}
               style={{ width: '100%', boxSizing: 'border-box' }}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="寫下你的想法，答錯沒關係"
+              placeholder="寫下你的判斷；不確定時仍請試著作答"
+              disabled={posting}
+            />
+            <label htmlFor="open-reason">判斷理由</label>
+            <textarea
+              id="open-reason"
+              rows={3}
+              style={{ width: '100%', boxSizing: 'border-box' }}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="指出原文中支持判斷的線索"
               disabled={posting}
             />
             <button
-              disabled={posting || input.trim().length === 0}
-              onClick={() => void post({ action: 'answer', text: input })}
+              disabled={posting || input.trim().length === 0 || reason.trim().length === 0}
+              onClick={() => void post({ action: 'answer', text: input, reason })}
             >
               送出
-            </button>{' '}
-            <button
-              style={{
-                background: 'none',
-                border: 'none',
-                textDecoration: 'underline',
-                cursor: 'pointer',
-                fontSize: 13,
-              }}
-              disabled={posting}
-              onClick={() => void post({ action: 'answer', text: '我不確定' })}
-            >
-              我不確定
             </button>
           </>
         );
@@ -852,16 +848,6 @@ function Reading({
         );
       }
     }
-    if (lock === 'finished') {
-      // The primary unlock button lives INLINE next to the highlight (see
-      // PassageText). The panel just points at it so the reader is not stuck
-      // looking for a button that used to be here.
-      return (
-        <p className="chat-composer-idle" style={{ margin: 0 }}>
-          這一句看完了。按正文那句話後面的<b>「解鎖」</b>就可以問下一句。
-        </p>
-      );
-    }
     // Idle: no open interaction. Show a disabled composer so the panel keeps its
     // shape instead of collapsing to a header. The reader responds by SELECTING
     // in the passage; there is no free-form message box, by design.
@@ -892,13 +878,13 @@ function Reading({
           <p style={{ fontSize: 14 }}>
             用滑鼠選取你看不懂的地方就可以問。<b>想問幾處都可以，不問也可以。</b>
             <br />
-            一次只能問一處，問完按<b>解鎖</b>才能問下一處。
+            一次只能問一處，看完解釋按<b>「看完了」</b>就可以問下一處。選錯了，在作答前可以按<b>「取消選取」</b>重選。
           </p>
         ) : (
           <p style={{ fontSize: 14 }}>
             用滑鼠選取你看不懂的地方，系統會記錄下來。
             <b>想標幾處都可以，不標也可以。</b>
-            標記後按<b>解鎖</b>才能標下一處。
+            標記後就可以接著標下一處。
           </p>
         )}
 
@@ -907,12 +893,6 @@ function Reading({
           token={token}
           locked={lock !== null}
           activeRange={lock !== null ? activeRange : null}
-          showUnlock={lock === 'finished'}
-          onUnlock={() => {
-            setLock(null);
-            setActiveRange(null);
-            setNotice('');
-          }}
           onSelect={(selection, start) =>
             void post({ action: 'highlight', selection, start })
           }
@@ -920,9 +900,7 @@ function Reading({
 
         {notice && <p style={{ fontSize: 14, color: '#a33' }}>{notice}</p>}
 
-        {/* Control has no sidebar. The unlock button lives inline next to the
-            highlight (see PassageText), same as the AI arms — one behaviour for
-            the whole study. */}
+        {/* Control has no sidebar: each highlight is recorded and the passage frees at once. */}
         {!hasSidebar && (
           <p style={{ fontSize: 14, color: '#555' }}>（本組沒有 AI 回應，你的標記已記錄。）</p>
         )}
@@ -952,6 +930,17 @@ function Reading({
           degraded={turn?.degraded}
         >
           {composer}
+          {turn?.cancellable && (
+            <button
+              type="button"
+              className="cancel-selection"
+              disabled={posting}
+              onClick={() => void post({ action: 'cancel' })}
+              title="選錯了？作答前可以取消，重新選一段"
+            >
+              取消選取，重新選
+            </button>
+          )}
         </ChatPanel>
       )}
     </div>

@@ -8,24 +8,18 @@ import type { LadderState } from './types';
  * check: "the explanation appeared before the reader had tried" becomes impossible
  * by construction rather than by prompt discipline.
  *
- *   layer1 --correct+reason--> explanation
- *          --wrong+reason--> layer2 --correct+reason--> explanation
- *                                   --wrong+reason---> layer3_choice
- *   layer3_choice --reason accepted--> explanation (right or wrong answer)
- *                 --reason rejected--> reason_rejected --> layer3_choice (max 2x)
+ *   v5.8: layer1 --answer+reason--> layer2 --answer+reason-->
+ *         layer3_choice --answer+reason--> explanation.
+ *   An insufficient reason leaves the reader on the same rung. The step name
+ *   layer3_choice is retained in persisted rows, but v5.8 displays open text.
+ *   Pre-v5.8 multiple-choice events below remain for already-open interactions.
  *   explanation --reader clicks 看完了--> done
  *
- * TWO WAYS TO ANSWER LAYERS 1-2
- *   target sentence -> multiple choice + required reason  (`layer_choice` then `reason`)
- *   free highlight  -> open text                          (`free_answer`)
- * Both end in the same places. A rejected reason at layer 1 or 2 keeps the reader on the
- * SAME step — it does not use `reason_rejected`, which belongs to the bottom-out only.
- *
- * A correct pick alone never opens the explanation: the reason must be accepted too.
- * Without that rule a 3-option choice would let one reader in three skip the whole ladder
- * by guessing, and the questioning manipulation would not have happened for them.
+ * The legacy choice path uses `layer_choice` and `reason`; v5.8 uses
+ * `open_response` only after answer and reason validation in engine.ts.
  */
 export type LadderEvent =
+  | { kind: 'open_response' }
   | { kind: 'free_answer'; correct: boolean; hasReason: boolean }
   /** a layer-1 or layer-2 multiple choice (target sentences) */
   | { kind: 'layer_choice'; index: number; correct: boolean }
@@ -49,6 +43,9 @@ export function reduce(state: LadderState, event: LadderEvent): LadderState {
     case 'layer2': {
       const layer = state.step === 'layer1' ? 1 : 2;
       const nextStep = state.step === 'layer1' ? ('layer2' as const) : ('layer3_choice' as const);
+
+      // v5.8: a complete open answer and reason advances regardless of correctness.
+      if (event.kind === 'open_response') return { ...state, step: nextStep };
 
       // ---- multiple-choice path (target sentences) ----
       if (event.kind === 'layer_choice') {
@@ -100,6 +97,7 @@ export function reduce(state: LadderState, event: LadderEvent): LadderState {
       return { ...state, step: nextStep };
     }
     case 'layer3_choice': {
+      if (event.kind === 'open_response') return { ...state, step: 'explanation' };
       if (event.kind === 'choice') {
         return { ...state, choiceIndex: event.index, choiceCorrect: event.correct };
       }
@@ -158,8 +156,9 @@ export function explanationAllowed(state: LadderState): boolean {
 /** How this interaction ended, for the per-sentence outcome table. */
 export function endPosition(
   state: LadderState
-): 'layer1_correct' | 'layer2_correct' | 'choice_correct' | 'choice_wrong' | 'unfinished' {
+): 'layer1_correct' | 'layer2_correct' | 'choice_correct' | 'choice_wrong' | 'open_response' | 'unfinished' {
   if (!explanationAllowed(state)) return 'unfinished';
   if (state.correctBefore) return state.correctAtLayer === 1 ? 'layer1_correct' : 'layer2_correct';
+  if (state.choiceIndex === undefined) return 'open_response';
   return state.choiceCorrect ? 'choice_correct' : 'choice_wrong';
 }

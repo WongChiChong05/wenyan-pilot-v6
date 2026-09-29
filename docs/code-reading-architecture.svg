@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">wenyan-pilot 系統架構</title>
+  <desc id="desc">參與者瀏覽器經 Next API 進入 study service，再由 engine、狀態機、prompt、模型及 Store 完成研究流程。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#40566f"/>
+    </marker>
+    <style>
+      .title { font: 600 28px system-ui, sans-serif; fill: #17202a; }
+      .sub { font: 400 14px system-ui, sans-serif; fill: #52606d; }
+      .label { font: 600 17px system-ui, sans-serif; fill: #17202a; }
+      .small { font: 400 13px system-ui, sans-serif; fill: #334e68; }
+      .box { stroke: #8aa4be; stroke-width: 1.5; rx: 12; }
+      .client { fill: #eef7ff; }
+      .server { fill: #f4f1ff; }
+      .rule { fill: #effaf3; }
+      .model { fill: #fff7e8; }
+      .data { fill: #fff0f0; }
+      .line { stroke: #40566f; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #6b7c93; stroke-width: 1.5; stroke-dasharray: 6 5; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1280" height="760" fill="#fbfcfe"/>
+  <text x="56" y="50" class="title">wenyan-pilot：誰控制甚麼</text>
+  <text x="56" y="76" class="sub">實線是執行資料流；虛線是內容或驗證依賴。狀態機而非模型控制 explanation timing。</text>
+
+  <rect x="55" y="125" width="210" height="110" class="box client"/>
+  <text x="160" y="160" text-anchor="middle" class="label">React 瀏覽器</text>
+  <text x="160" y="188" text-anchor="middle" class="small">page.tsx / run/page.tsx</text>
+  <text x="160" y="211" text-anchor="middle" class="small">顯示狀態、收集操作</text>
+
+  <rect x="330" y="125" width="210" height="110" class="box server"/>
+  <text x="435" y="160" text-anchor="middle" class="label">Next API routes</text>
+  <text x="435" y="188" text-anchor="middle" class="small">bodyOf / api wrapper</text>
+  <text x="435" y="211" text-anchor="middle" class="small">驗證 HTTP 邊界</text>
+
+  <rect x="605" y="125" width="210" height="110" class="box server"/>
+  <text x="710" y="160" text-anchor="middle" class="label">study.ts</text>
+  <text x="710" y="188" text-anchor="middle" class="small">stage、分組、測驗</text>
+  <text x="710" y="211" text-anchor="middle" class="small">延遲流程與 access</text>
+
+  <rect x="880" y="125" width="210" height="110" class="box server"/>
+  <text x="985" y="160" text-anchor="middle" class="label">engine.ts</text>
+  <text x="985" y="188" text-anchor="middle" class="small">一次 highlight 的協調器</text>
+  <text x="985" y="211" text-anchor="middle" class="small">記錄、生成、推進</text>
+
+  <path d="M265 180 H330" class="line"/>
+  <path d="M540 180 H605" class="line"/>
+  <path d="M815 180 H880" class="line"/>
+
+  <rect x="805" y="315" width="180" height="98" class="box rule"/>
+  <text x="895" y="348" text-anchor="middle" class="label">ladder.ts</text>
+  <text x="895" y="374" text-anchor="middle" class="small">純狀態機</text>
+  <text x="895" y="395" text-anchor="middle" class="small">准許／禁止 explanation</text>
+
+  <rect x="1015" y="315" width="180" height="98" class="box rule"/>
+  <text x="1105" y="348" text-anchor="middle" class="label">驗證規則</text>
+  <text x="1105" y="374" text-anchor="middle" class="small">reasonGate / leak</text>
+  <text x="1105" y="395" text-anchor="middle" class="small">highlight / focus</text>
+
+  <rect x="805" y="505" width="180" height="98" class="box model"/>
+  <text x="895" y="538" text-anchor="middle" class="label">prompts.ts</text>
+  <text x="895" y="564" text-anchor="middle" class="small">組成 system + user</text>
+  <text x="895" y="585" text-anchor="middle" class="small">沒有 state transition 權力</text>
+
+  <rect x="1015" y="505" width="180" height="98" class="box model"/>
+  <text x="1105" y="538" text-anchor="middle" class="label">llm.ts</text>
+  <text x="1105" y="564" text-anchor="middle" class="small">Gemini / Anthropic / mock</text>
+  <text x="1105" y="585" text-anchor="middle" class="small">共同 model parameters</text>
+
+  <path d="M955 235 V280 H895 V315" class="line"/>
+  <path d="M1015 235 V280 H1105 V315" class="line"/>
+  <path d="M955 235 V460 H895 V505" class="line"/>
+  <path d="M985 554 H1015" class="line"/>
+
+  <rect x="55" y="505" width="220" height="110" class="box data"/>
+  <text x="165" y="540" text-anchor="middle" class="label">content</text>
+  <text x="165" y="568" text-anchor="middle" class="small">passages.ts / items.ts</text>
+  <text x="165" y="591" text-anchor="middle" class="small">文章、target、答案</text>
+
+  <rect x="350" y="505" width="260" height="110" class="box data"/>
+  <text x="480" y="540" text-anchor="middle" class="label">Store interface</text>
+  <text x="480" y="568" text-anchor="middle" class="small">PostgreSQL：正式環境</text>
+  <text x="480" y="591" text-anchor="middle" class="small">JSON / Snapshot：開發與測試</text>
+
+  <path d="M710 235 V455 H480 V505" class="line"/>
+  <path d="M880 200 H850 V455 H575 V505" class="line"/>
+  <path d="M275 560 H350" class="dash"/>
+  <path d="M275 530 H730 V220 H815" class="dash"/>
+
+  <rect x="55" y="665" width="1140" height="55" fill="#edf2f7" rx="10"/>
+  <text x="625" y="689" text-anchor="middle" class="label">核心控制線</text>
+  <text x="625" y="711" text-anchor="middle" class="small">client request → API 驗證 → study/engine → ladder.reduce() → Store commit → 公開 view；LLM 只提供候選文字</text>
+</svg>

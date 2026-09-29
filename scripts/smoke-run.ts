@@ -24,7 +24,7 @@ const llm = new MockProvider((system) => {
   if (system.includes('判斷一段中文回答')) return JSON.stringify({ verdict: 'accept' });
   if (system.includes('是否與參考答案一致')) return JSON.stringify({ correct: false });
   if (system.includes('解說者')) return JSON.stringify({ type: 'explain', text: '這裡是解釋。' });
-  return JSON.stringify({ type: 'question', strategy: 'C', text: '這個字在句子什麼位置？' });
+  return JSON.stringify({ type: 'question', text: '這個字在句子什麼位置？' });
 });
 
 function blank(arm: Arm): Participant {
@@ -72,31 +72,15 @@ async function runOne(store: MemoryStore, forcedArm: Arm | null) {
     let cur = (await store.getParticipant(p.id))!;
     let turn = await engine.startAssist(cur, t.text);
     if (arm === 'socratic') {
-      // Every rung of a target sentence is a multiple choice plus a required reason.
-      const wrong = (spec?: { answerIndex: number }) => (spec && spec.answerIndex === 0 ? 1 : 0);
+      // Every rung requires a self-written answer and a reason; correctness is not a gate.
       const because = `因為看到${t.text.slice(0, 2)}`;
-
-      if (turn.kind !== 'choice') throw new Error('socratic layer 1 must be a multiple choice');
-      if (turn.choice?.options.length !== t.layer1Choice?.options.length) {
-        throw new Error('layer 1 must present the pre-written options');
+      for (let layer = 1; layer <= 3; layer++) {
+        if (turn.kind !== 'question' || turn.choice) throw new Error(`layer ${layer} must be open text`);
+        cur = (await store.getParticipant(p.id))!;
+        turn = await engine.reply(cur, { kind: 'answer', text: '我的判斷', reason: because });
       }
-      cur = (await store.getParticipant(p.id))!;
-      turn = await engine.reply(cur, { kind: 'choice', index: wrong(t.layer1Choice), reason: because });
-      if (turn.kind !== 'choice') throw new Error('a wrong layer-1 pick must drop to layer 2');
-
-      cur = (await store.getParticipant(p.id))!;
-      turn = await engine.reply(cur, { kind: 'choice', index: wrong(t.layer2Choice), reason: because });
-      if (turn.kind !== 'choice') throw new Error('third layer must be the multiple choice');
-
-      cur = (await store.getParticipant(p.id))!;
-      turn = await engine.reply(cur, { kind: 'choice', index: 0, reason: '不知道' });
-      if (turn.kind !== 'reject') throw new Error('contentless reason must be rejected');
-      if (!turn.choice) throw new Error('a rejection must resend the options');
-
-      cur = (await store.getParticipant(p.id))!;
-      turn = await engine.reply(cur, { kind: 'choice', index: 0, reason: because });
       if (turn.kind !== 'explanation') throw new Error('explanation should appear after a reason');
-      if (turn.text.slice(0, 10) !== t.explanation.slice(0, 10)) {
+      if (turn.text !== t.explanation) {
         throw new Error('socratic explanation must be the pre-written one');
       }
     }

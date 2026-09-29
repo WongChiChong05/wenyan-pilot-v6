@@ -86,6 +86,25 @@ export function expect(actual: any) {
     toBeDefined() {
       if (actual === undefined) throw new Error('expected defined');
     },
+    toBeUndefined() {
+      if (actual !== undefined) throw new Error('expected undefined, got ' + JSON.stringify(actual));
+    },
+    get rejects() {
+      return {
+        async toThrow(message?: string) {
+          try {
+            await actual;
+          } catch (e) {
+            const detail = e instanceof Error ? e.message : String(e);
+            if (message !== undefined && !detail.includes(message)) {
+              throw new Error('expected rejection containing ' + JSON.stringify(message) + ', got ' + detail);
+            }
+            return;
+          }
+          throw new Error('expected promise to reject');
+        },
+      };
+    },
     get not() {
       return {
         toContain(exp: any) {

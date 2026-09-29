@@ -106,6 +106,32 @@ describe('server-side study boundary', () => {
     await assert.rejects(assist(store, { ...base, turnIndex: -1, action: 'choice', index: 0, reason: '因為前面寫擊' }));
     assert.equal((await store.listInteractions()).length, 1);
   });
+  it('accepts a written answer only with a reason and never returns S2 options', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic');
+    p.stageEnteredTs.S2 = new Date().toISOString(); await store.createParticipant(p);
+    const first = await assist(store, { token: p.token, action: 'highlight', selection: '擊之' });
+    assert.equal(first.kind, 'question'); assert.equal(first.choice, undefined);
+    const active = (await store.getParticipant(p.id))!.active!;
+    const base = { token: p.token, interactionId: first.interactionId, turnIndex: active.turnIndex };
+    await assert.rejects(assist(store, { ...base, action: 'answer', text: '錯誤判斷' }));
+    await assert.rejects(assist(store, { ...base, action: 'choice', index: 0, reason: '因為原文寫擊之' }));
+    const second = await assist(store, { ...base, action: 'answer', text: '錯誤判斷', reason: '因為原文寫擊之' });
+    assert.equal(second.kind, 'question'); assert.equal(second.choice, undefined);
+    assert.equal((await store.getParticipant(p.id))!.active?.ladder.step, 'layer2');
+  });
+  it('lets the direct arm type a perspective but not answer, and accepts an empty perspective', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('direct');
+    p.stageEnteredTs.S2 = new Date().toISOString(); await store.createParticipant(p);
+    const first = await assist(store, { token: p.token, action: 'highlight', selection: '平' });
+    assert.equal(first.kind, 'perspective');
+    const active = (await store.getParticipant(p.id))!.active!;
+    const base = { token: p.token, interactionId: first.interactionId, turnIndex: active.turnIndex };
+    await assert.rejects(assist(store, { ...base, action: 'answer', text: '判斷', reason: '因為原文' }));
+    await assert.rejects(assist(store, { ...base, action: 'perspective', value: 'x'.repeat(201) }));
+    const second = await assist(store, { ...base, action: 'perspective', value: '' });
+    assert.equal(second.kind, 'explanation');
+    assert.equal((await store.getParticipant(p.id))!.active?.perspectiveSource, 'default');
+  });
   it('marks timeout while retaining answers and the participant', async () => {
     const store = new MemoryStore(); const p = makeParticipant('control'); p.stage = 'S1';
     p.stageEnteredTs.S1 = new Date(Date.now() - 400000).toISOString(); await store.createParticipant(p);

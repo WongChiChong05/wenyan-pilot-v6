@@ -8,6 +8,11 @@ async function main() {
   const prompts = await import('../src/lib/prompts');
   const { classifyGranularity, matchTarget, neighborhoodOf } = await import('../src/lib/highlight');
   const selection = process.argv[2] ?? '帝甚不平';
+  // Optional 4th argument: the reader's typed perspective. Omitted = default (meaning).
+  const typed = prompts.cleanPerspective(process.argv[4] ?? '');
+  const perspective = typed
+    ? { text: typed, source: 'typed' as const }
+    : { text: prompts.DEFAULT_PERSPECTIVE, source: 'default' as const };
   const start = process.argv[3] === undefined ? LEARNING_PASSAGE.text.indexOf(selection) : Number(process.argv[3]);
   if (!selection || !Number.isInteger(start) || start < 0 || LEARNING_PASSAGE.text.slice(start, start + selection.length) !== selection) {
     throw new Error('Selection/offset must match the learning passage');
@@ -17,26 +22,32 @@ async function main() {
   const target = LEARNING_PASSAGE.targets.find(t => t.id === targetId);
   const context = { passage: LEARNING_PASSAGE.text, selection, granularity,
     selectionStart: start, selectionEnd: start + selection.length,
-    neighborhood: neighborhoodOf(LEARNING_PASSAGE.text, start, start + selection.length), withOptions: true };
+    neighborhood: neighborhoodOf(LEARNING_PASSAGE.text, start, start + selection.length) };
   console.log(JSON.stringify({
-    notice: 'Offline inspection only. No model request was sent. Server-only answer keys below must not be shared with participants.',
+    notice: 'Offline inspection only. No model request was sent. Target explanations are researcher-only.',
     llm: CONFIG.llm, selection, granularity, targetId,
-    focusDisambiguation: target ? { generated: false, reason: 'target sentences keep the pre-written ladder' } : {
-      generated: true,
-      system: prompts.focusOptionsSystemPrompt(),
-      user: prompts.focusOptionsPrompt({ selection, neighborhood: context.neighborhood }),
-      note: 'The server accepts only 2-4 unique substrings and moves known proper nouns behind other candidates.',
+    focusDisambiguation: target ? { required: false } : {
+      requiredForLongFreeSelection: true,
+      prompt: '你主要想問這段文字裡的哪一個字或詞？請自行輸入反白範圍內的字詞。',
+      note: 'Both AI arms. The reader types a substring of the original highlight. No suggestions are generated.',
     },
-    socratic: target ? { generated: false, layer1: { text: target.layer1, ...target.layer1Choice },
-      layer2: { text: target.layer2, ...target.layer2Choice }, layer3: target.choice, explanation: target.explanation } : {
-      generated: true, system: prompts.socraticSystemPrompt(),
-      layer1User: prompts.socraticTurnPrompt({ ...context, layer: 1 }),
-      layer2User: prompts.socraticTurnPrompt({ ...context, layer: 2 }),
+    perspectiveStep: target ? { required: false } : {
+      requiredForFreeHighlight: true, arms: ['socratic', 'direct'],
+      prompt: prompts.perspectivePrompt(selection), used: perspective,
+      note: 'Free text only, no options. Empty entry = default perspective (meaning).',
+    },
+    socratic: target ? { generated: false, layer1: target.layer1,
+      layer2: target.layer2, layer3: prompts.openFinalQuestion(target.text), explanation: target.explanation } : {
+      generated: true, system: prompts.socraticOpenSystemPrompt(),
+      layer1User: prompts.socraticTurnPrompt({ ...context, layer: 1, perspective }),
+      layer2User: prompts.socraticTurnPrompt({ ...context, layer: 2, perspective,
+        lastReaderTurn: '答案：（讀者第一層答案）；理由：（讀者第一層理由）' }),
+      layer3: prompts.openFinalQuestion(selection, perspective),
     },
     direct: target ? { generated: false, explanation: target.explanation } : {
-      generated: true, system: prompts.directSystemPrompt(), user: prompts.directTurnPrompt(context) },
+      generated: true, system: prompts.directSystemPrompt(), user: prompts.directTurnPrompt({ ...context, perspective }) },
     reasonJudgeExample: prompts.reasonJudgePrompt({ sentence: target?.text ?? selection,
-      options: target?.layer1Choice?.options ?? ['前面的文字', '後面的文字', '前後一起對照'], reason: '我比較了上下文的描述' }),
+      options: [], reason: '我比較了上下文的描述' }),
     reasonJudgeNote: 'This is a prompt example. The rule gate may accept/reject it without calling the model.',
   }, null, 2));
 }

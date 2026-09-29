@@ -1,5 +1,6 @@
 import { api, bodyOf } from '@/lib/api';
 import { assist } from '@/lib/study';
+import { isCancellable } from '@/lib/engine';
 import { getStore } from '@/lib/store';
 
 export const dynamic = 'force-dynamic';
@@ -13,7 +14,7 @@ export async function POST(req: Request) {
     return getStore().transaction(async store => {
       const result = await assist(store, body);
       const p = await store.getParticipantByToken(body.token as string, 'main');
-      return { ...result, turnIndex: p?.active?.turnIndex ?? null };
+      return { ...result, turnIndex: p?.active?.turnIndex ?? null, cancellable: p?.active ? isCancellable(p.active) : false };
     });
   });
 }
