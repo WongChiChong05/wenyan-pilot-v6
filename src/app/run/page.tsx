@@ -39,6 +39,19 @@ interface StageView {
     focus?: { options: string[]; allowOther: true };
     cancellable?: boolean;
   };
+  /** v6 S2: position among the training passages */
+  training?: { index: number; total: number };
+  /** v6 S1b / S5a / S5b sentence translation */
+  translation?: {
+    stage: string;
+    index: number;
+    total: number;
+    sentence: string;
+    allowHelp: boolean;
+    hint: string | null;
+    explanation: string | null;
+    done: boolean;
+  };
   config: { version: string };
 }
 
@@ -295,7 +308,14 @@ function Runner() {
     if (view.stage === 'S2')
       return (
         <Shell wide={wide}>
-          <Reading view={view} token={token} onAdvance={advance} />
+          {/* keyed by passage: moving to the next training passage starts a fresh reading pane */}
+          <Reading key={view.passage?.id} view={view} token={token} onAdvance={advance} />
+        </Shell>
+      );
+    if (view.translation && !view.translation.done)
+      return (
+        <Shell>
+          <Translate key={`${view.stage}-${view.translation.index}`} view={view} token={token} onDone={load} />
         </Shell>
       );
     if (view.stage === 'S4')
@@ -385,10 +405,9 @@ function PassageText({
   const active = Boolean(onSelect) && !locked;
 
   /**
-   * The passage is one text node when idle so `window.getSelection()` gives offsets
-   * directly. Once an interaction is open, we split it into up to three runs so we
-   * can mark the highlighted span visually. New selections are blocked by `locked`
-   * until the reader presses 看完了 or cancels (v5.12: no separate unlock step).
+   * v6: the passage is split into runs so the required targets can be shaded and the open
+   * highlight marked. New selections are blocked by `locked` until the reader presses
+   * 看完了 or cancels (v5.12: no separate unlock step).
    */
   const rangeIsValid =
     activeRange != null &&
@@ -405,38 +424,52 @@ function PassageText({
     let start: number | undefined;
     if (win && win.rangeCount > 0 && bodyRef.current) {
       const range = win.getRangeAt(0);
-      // The passage node may or may not be split into spans depending on whether
-      // an interaction is open. Only trust the offset when the range's start
-      // container is the single text child of the body — otherwise fall back to
-      // substring resolution on the server.
-      const node = bodyRef.current.firstChild;
-      if (node && range.startContainer === node && node.nodeType === Node.TEXT_NODE) {
+      // v6: the passage may be split into shaded spans (required targets), so the offset
+      // is measured as the text length from the start of the body to the selection start.
+      // The server re-checks it and falls back to substring resolution if it does not match.
+      if (bodyRef.current.contains(range.startContainer)) {
+        const before = document.createRange();
+        before.setStart(bodyRef.current, 0);
+        before.setEnd(range.startContainer, range.startOffset);
         const leading = raw.length - raw.trimStart().length;
-        start = range.startOffset + leading;
+        start = before.toString().length + leading;
         if (passage.text.slice(start, start + sel.length) !== sel) start = undefined;
       }
     }
     onSelect!(raw, start);
   };
 
-  const body = rangeIsValid ? (
-    <>
-      {passage.text.slice(0, activeRange!.start)}
-      <span
-        style={{
-          background: '#fdf1cd',
-          boxShadow: 'inset 0 -2px 0 #d6a100',
-          borderRadius: 2,
-          padding: '0 1px',
-        }}
-      >
-        {passage.text.slice(activeRange!.start, activeRange!.end)}
-      </span>
-      {passage.text.slice(activeRange!.end)}
-    </>
-  ) : (
-    passage.text
-  );
+  // v6: required targets are shaded (every arm), the open highlight is marked on top.
+  const segments = useMemo(() => {
+    const n = passage.text.length;
+    const shade = new Array<boolean>(n).fill(false);
+    const done = new Array<boolean>(n).fill(false);
+    for (const t of passage.targets) {
+      const at = passage.text.indexOf(t.text);
+      if (at < 0) continue;
+      for (let i = at; i < at + t.text.length; i++) { shade[i] = true; if (t.done) done[i] = true; }
+    }
+    const mark = (i: number) => rangeIsValid && i >= activeRange!.start && i < activeRange!.end;
+    const out: { text: string; shade: boolean; done: boolean; mark: boolean }[] = [];
+    for (let i = 0; i < n; i++) {
+      const last = out.at(-1);
+      if (last && last.shade === shade[i] && last.done === done[i] && last.mark === mark(i)) last.text += passage.text[i];
+      else out.push({ text: passage.text[i], shade: shade[i], done: done[i], mark: mark(i) });
+    }
+    return out;
+  }, [passage.text, passage.targets, rangeIsValid, activeRange]);
+
+  const body = segments.length === 1 && !segments[0].shade && !segments[0].mark
+    ? passage.text
+    : segments.map((seg, i) => (
+        <span
+          key={i}
+          className={seg.shade ? `target-shade${seg.done ? ' done' : ''}` : undefined}
+          style={seg.mark ? { background: '#fdf1cd', boxShadow: 'inset 0 -2px 0 #d6a100', borderRadius: 2 } : undefined}
+        >
+          {seg.text}
+        </span>
+      ));
 
   return (
     <div style={{ lineHeight: 2.2, fontSize: 18, letterSpacing: 1 }}>
@@ -644,7 +677,13 @@ function Reading({
     return () => clearInterval(id);
   }, []);
   const timeLeft = Math.max(0, minSeconds - elapsed);
-  const canContinue = gated ? met : timeLeft === 0;
+  // v6: every arm stays at least minSeconds on each passage; the AI arms must also finish
+  // this passage's required targets.
+  const canContinue = timeLeft === 0 && (!gated || met);
+  const passageTargetIds = view.passage?.targets.map((t) => t.id) ?? [];
+  const remaining = Math.max(0, required - doneIds.filter((id) => passageTargetIds.includes(id)).length);
+  const training = view.training ?? { index: 0, total: 1 };
+  const lastPassage = training.index >= training.total - 1;
 
   const loadTranscript = useCallback(async () => {
     if (!hasSidebar || !token) return;
@@ -872,19 +911,19 @@ function Reading({
     <div className="s2-grid">
       <div className="s2-main">
         <Timer seconds={view.seconds.max} onTimeout={() => onAdvance('timeout')} />
-        {/* Nothing is shaded and nothing is required: where the reader looks and how much
-            they ask is the thing being observed, so the copy must not point anywhere. */}
+        <p style={{ fontSize: 13, color: '#666', margin: '0 0 4px' }}>
+          第 {training.index + 1} 篇，共 {training.total} 篇
+        </p>
+        {/* v6: required targets are shaded in every arm; only the AI arms are gated on them. */}
         {hasSidebar ? (
           <p style={{ fontSize: 14 }}>
-            用滑鼠選取你看不懂的地方就可以問。<b>想問幾處都可以，不問也可以。</b>
+            用滑鼠選取你看不懂的地方就可以問。<b>標了底色的兩句，每句都要問過一次</b>，才能看下一篇；其他地方想問幾處都可以。
             <br />
             一次只能問一處，看完解釋按<b>「看完了」</b>就可以問下一處。選錯了，在作答前可以按<b>「取消選取」</b>重選。
           </p>
         ) : (
           <p style={{ fontSize: 14 }}>
-            用滑鼠選取你看不懂的地方，系統會記錄下來。
-            <b>想標幾處都可以，不標也可以。</b>
-            標記後就可以接著標下一處。
+            請仔細閱讀，<b>標了底色的兩句</b>請特別留意。用滑鼠選取你看不懂的地方，系統會記錄下來；想標幾處都可以，不標也可以。
           </p>
         )}
 
@@ -906,17 +945,17 @@ function Reading({
         )}
 
         <p style={{ marginTop: 24 }}>
-          <button disabled={!canContinue} onClick={() => onAdvance('user')}>
+          <button disabled={!canContinue || posting} onClick={() => onAdvance('user')}>
             {canContinue
-              ? '進入下一階段'
-              : gated
-                ? `還有 ${required - doneIds.length} 句沒問過`
+              ? lastPassage ? '進入下一階段' : '下一篇'
+              : gated && !met
+                ? `還有 ${remaining} 句標了底色的句子沒問過`
                 : `還需停留 ${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, '0')}`}
           </button>
         </p>
-        {!canContinue && !gated && (
+        {!canContinue && (
           <p style={{ fontSize: 13, color: '#666', marginTop: -12 }}>
-            時間到之前可以繼續讀，也可以繼續問，或什麼都不做。
+            時間到之前可以繼續讀，也可以繼續問。
           </p>
         )}
       </div>
@@ -947,6 +986,108 @@ function Reading({
   );
 }
 
+/**
+ * v6 sentence translation (S1b, S5a, S5b). One sentence per screen, keyed by index so a
+ * new sentence starts clean. The server owns the clocks and the first-help snapshot; the
+ * client reports only when the first key was pressed. Copy/paste is blocked page-wide, so
+ * an explanation can only be retyped, never pasted.
+ *
+ * The wording is neutral on purpose: nothing here tells the reader to try first or to ask
+ * first, because which one they do is the outcome being measured.
+ */
+function Translate({ view, token, onDone }: { view: StageView; token: string; onDone: () => void }) {
+  const t = view.translation!;
+  const [text, setText] = useState('');
+  const [hint, setHint] = useState<string | null>(t.hint);
+  const [explanation, setExplanation] = useState<string | null>(t.explanation);
+  const [posting, setPosting] = useState(false);
+  const [error, setError] = useState('');
+  const shownAt = useRef(Date.now());
+  const firstInputMs = useRef<number | null>(null);
+  const textRef = useRef(text);
+  textRef.current = text;
+
+  const post = async (payload: Record<string, unknown>) => {
+    setPosting(true);
+    setError('');
+    try {
+      const res = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token, index: t.index, firstInputMs: firstInputMs.current, ...payload }),
+      });
+      const data = (await res.json()) as { error?: string; kind?: string; text?: string };
+      if (!res.ok || data.error) {
+        setError('沒有送出成功，請再試一次。');
+        return null;
+      }
+      return data;
+    } catch {
+      setError('連線失敗，請再試一次。');
+      return null;
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  const help = async (kind: 'hint' | 'explanation') => {
+    const data = await post({ action: 'help', kind, draft: textRef.current });
+    if (!data) return;
+    if (kind === 'hint') setHint(data.text ?? '');
+    else setExplanation(data.text ?? '');
+  };
+  const finish = async (payload: Record<string, unknown>) => {
+    const data = await post(payload);
+    if (data) onDone();
+  };
+
+  const title = t.stage === 'S1b' ? '閱讀前：翻譯練習' : t.stage === 'S5b' ? '閱讀後測驗 1／2：翻譯' : '閱讀後測驗 2／2：翻譯';
+  return (
+    <div>
+      <Timer
+        seconds={view.seconds.max}
+        onTimeout={() => void finish({ action: 'timeout', draft: textRef.current })}
+      />
+      <section className="quiz-stage-intro" aria-label={title}>
+        <h2>{title}</h2>
+        <p>
+          請把下面這一句翻譯成白話（第 {t.index + 1} 句，共 {t.total} 句）。
+          {t.allowHelp
+            ? '需要的話可以按「提示」或「解釋」，也可以跳過。'
+            : '這一段沒有提示。不會的話可以跳過。'}
+        </p>
+      </section>
+      {view.passage && <PassageText view={view} token={token} />}
+      <div className="translate-sentence">「{t.sentence}」</div>
+      <label htmlFor="translation-answer">你的翻譯</label>
+      <textarea
+        id="translation-answer"
+        rows={3}
+        style={{ width: '100%', boxSizing: 'border-box', fontSize: 16 }}
+        value={text}
+        disabled={posting}
+        onChange={(e) => {
+          if (firstInputMs.current === null && e.target.value.length > 0) firstInputMs.current = Date.now() - shownAt.current;
+          setText(e.target.value);
+        }}
+      />
+      {hint && <p className="translate-help"><b>提示：</b>{hint}</p>}
+      {explanation && <p className="translate-help"><b>解釋：</b>{explanation}</p>}
+      <div className="translate-actions">
+        {t.allowHelp && (
+          <>
+            <button type="button" disabled={posting || hint !== null} onClick={() => void help('hint')}>提示</button>
+            <button type="button" disabled={posting || explanation !== null} onClick={() => void help('explanation')}>解釋</button>
+          </>
+        )}
+        <button type="button" disabled={posting} onClick={() => void finish({ action: 'skip', draft: text })}>跳過</button>
+        <button type="button" disabled={posting || text.trim().length === 0} onClick={() => void finish({ action: 'submit', text })}>送出</button>
+      </div>
+      {error && <p role="alert" style={{ color: '#a33' }}>{error}</p>}
+    </div>
+  );
+}
+
 function Quiz({
   view,
   token,
@@ -964,17 +1105,12 @@ function Quiz({
   answersRef.current = answers;
   const submitting = useRef(false);
   const [submitError, setSubmitError] = useState('');
-  const section = view.stage === 'S3'
+  const section = view.stage === 'S5b'
     ? {
-        title: '閱讀後測驗 1／2：同篇立即理解',
-        detail: '以下 10 題都根據剛才閱讀的短文（二）。本階段沒有 AI，也不顯示註解。',
+        title: '閱讀後測驗 1／2：字詞',
+        detail: `這是另一篇新的短文，共 ${view.items?.length ?? 0} 題，選出最接近的意思。`,
       }
-    : view.stage === 'S5'
-      ? {
-          title: '閱讀後測驗 2／2：新篇遷移',
-          detail: '這是一篇新的短文，共 12 題，用來了解你能否把剛才的閱讀方式運用到新文章。',
-        }
-      : null;
+    : null;
 
   const submit = async (reason: 'user' | 'timeout' = 'user') => {
     if (submitting.current) return;
@@ -1041,7 +1177,7 @@ function Scales({ token, onDone }: { token: string; onDone: () => void }) {
   return (
     <div className="cognitive-load-scale">
       <h2>剛才閱讀時的感受</h2>
-      <p>請根據剛才閱讀短文（二）時的實際感受，判斷下列敘述與你的情況有多相符。</p>
+      <p>請根據剛才閱讀三篇短文、使用系統時的實際感受，判斷下列敘述與你的情況有多相符。</p>
       <p className="scale-hint">1＝完全不符合，7＝完全符合。每題都必須選擇一個答案。</p>
       {COGNITIVE_LOAD_ITEMS.map((item, questionIndex) => (
         <fieldset key={item.id}>

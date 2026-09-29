@@ -1,5 +1,6 @@
 import { ALL_ITEMS } from '../content/items';
-import type { Participant, ResponseRow, ScaleRow } from './types';
+import { TRANSLATION_ITEMS } from '../content/translation';
+import type { Participant, ResponseRow, ScaleRow, TranslationRow } from './types';
 
 /** Stable CSV for both storage backends; JSONB may reorder object keys. */
 function canonical(value: unknown): unknown {
@@ -21,7 +22,7 @@ export function toCsv(rows: object[]): string {
 const itemPrefix = (id: string) => id.replace(/[^A-Za-z0-9]+/g, '_');
 
 /** Analysis-ready one-participant-per-row export. Direct identifiers are excluded. */
-export function buildWideRows(participants: Participant[], responses: ResponseRow[], scales: ScaleRow[]) {
+export function buildWideRows(participants: Participant[], responses: ResponseRow[], scales: ScaleRow[], translations: TranslationRow[] = []) {
   const responsesByParticipant = new Map<string, Map<string, ResponseRow>>();
   for (const response of responses) {
     const mine = responsesByParticipant.get(response.participantId) ?? new Map<string, ResponseRow>();
@@ -54,6 +55,18 @@ export function buildWideRows(participants: Participant[], responses: ResponseRo
       row[`${prefix}_choice_text`] = response?.chosen == null ? null : item.options[response.chosen] ?? null;
       row[`${prefix}_correct`] = response?.correct ?? null;
       row[`${prefix}_rt_ms`] = response?.rtMs ?? null;
+    }
+    // v6: one block of columns per translated sentence (behaviour + the text for grading).
+    for (const t of TRANSLATION_ITEMS) {
+      const prefix = itemPrefix(t.id);
+      const r = translations.find(x => x.participantId === participant.id && x.itemId === t.id);
+      row[`${prefix}_tried_first`] = r?.triedFirst ?? null;
+      row[`${prefix}_first_help`] = r?.firstHelpKind ?? null;
+      row[`${prefix}_first_help_ms`] = r?.firstHelpMs ?? null;
+      row[`${prefix}_first_input_ms`] = r?.firstInputMs ?? null;
+      row[`${prefix}_skipped`] = r?.skipped ?? null;
+      row[`${prefix}_timed_out`] = r?.timedOut ?? null;
+      row[`${prefix}_text`] = r?.text ?? null;
     }
     const scale = scalesByParticipant.get(participant.id);
     for (const key of [

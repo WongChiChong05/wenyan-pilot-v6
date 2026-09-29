@@ -10,6 +10,7 @@ import type {
   ResponseRow,
   ScaleRow,
   ParticipantContact,
+  TranslationRow,
 } from './types';
 
 export interface Store {
@@ -28,6 +29,9 @@ export interface Store {
   listEvents(): Promise<EventRow[]>;
   addScale(row: ScaleRow): Promise<void>;
   listScales(): Promise<ScaleRow[]>;
+  /** v6 sentence translations (S1b, S5a, S5b); one row per participant, stage and item. */
+  addTranslation(row: TranslationRow): Promise<void>;
+  listTranslations(participantId?: string): Promise<TranslationRow[]>;
   createContact(row: ParticipantContact): Promise<void>;
   listContacts(): Promise<ParticipantContact[]>;
   updateContact(participantId: string, patch: Partial<ParticipantContact>): Promise<ParticipantContact>;
@@ -50,6 +54,7 @@ export class JsonStore implements Store {
       const buf = await fs.readFile(this.file, 'utf8');
       const db = JSON.parse(buf) as Db;
       if (db && !Array.isArray(db.contacts)) db.contacts = [];
+      if (db && !Array.isArray(db.translations)) db.translations = [];
       if (!db || Object.keys(emptyDb()).some(key => !Array.isArray(db[key as keyof Db]))) {
         throw new Error('invalid database shape');
       }
@@ -135,6 +140,13 @@ export class JsonStore implements Store {
   }
   async listScales() {
     return (await this.read()).scales;
+  }
+  addTranslation(row: TranslationRow) {
+    return this.transaction(store => store.addTranslation(row));
+  }
+  async listTranslations(participantId?: string) {
+    const db = await this.read();
+    return participantId ? db.translations.filter(r => r.participantId === participantId) : db.translations;
   }
   createContact(row: ParticipantContact) {
     return this.transaction(store => store.createContact(row));

@@ -3,21 +3,39 @@
  * so they live in one file and are echoed into the export so the analysis can prove
  * which configuration produced the data.
  *
- * Source: claude/實驗設計-Pilot版-十五項決定.md (v5.2)
+ * Source: claude/實驗設計-Pilot版-十五項決定.md (v5.2), revised by the v6 plan
+ * 「實驗計畫：行為導向版（v6 草案）」 (2026-09-29): primary outcome is behaviour (trying
+ * a translation before asking for help), measured in S1b and S5a; S3 and the S6 delayed
+ * test are removed; training is three passages.
  */
 export const CONFIG = {
-  version: 'v5.12',
+  version: 'v6.0',
 
-  /** Stage time limits in seconds. Upper bound auto-advances; lower bound flags. */
+  /**
+   * Stage time limits in seconds. Upper bound auto-advances; lower bound flags.
+   * S2 is PER TRAINING PASSAGE in v6 (three passages, so up to 24 minutes in total).
+   */
   stageSeconds: {
     S0: { min: 20, max: 600 },
     S1: { min: 60, max: 360 },
-    S2: { min: 180, max: 840 }, // 14 minutes, hard
-    S3: { min: 60, max: 300 },
+    S1b: { min: 60, max: 600 },
+    S2: { min: 180, max: 480 },
     S4: { min: 10, max: 120 },
-    S5: { min: 120, max: 600 },
-    S6: { min: 120, max: 600 },
+    S5b: { min: 120, max: 720 },
+    S5a: { min: 60, max: 600 },
   } as const,
+
+  /**
+   * v6 sentence-translation stages (S1b baseline, S5a post-test with help, S5b without).
+   * `triedFirstMinHan`: a sentence counts as "tried first" when the answer box held at least
+   * this many Han characters before the reader first pressed 提示, 解釋 or 跳過 (or when they
+   * submitted without pressing any). Freeze before the first real participant.
+   * `tooFastHelpSeconds` is used only by the analysis scripts, never at run time.
+   */
+  translation: {
+    triedFirstMinHan: 2,
+    tooFastHelpSeconds: 10,
+  },
 
   /** Highlight granularity: <= 4 characters is a word. */
   wordMaxChars: 4,
@@ -28,53 +46,40 @@ export const CONFIG = {
   /**
    * WHICH ARMS THE LOWER BOUND APPLIES TO.
    *
-   * NOW EMPTY: no arm is required to use the assistant at all.
+   * v6: THE TWO AI ARMS. Each training passage carries two `required` target sentences, and
+   * an AI-arm reader cannot move to the next passage until both have reached the
+   * explanation and been closed with 看完了 (or the passage times out).
    *
-   * It began as all three arms, then dropped control (telling the control reader which
-   * four sentences matter is itself an attention scaffold), and is now off everywhere.
-   * In a PILOT, "will students voluntarily use a questioning AI, or give up and read
-   * alone?" is a finding, not noise — and a forced minimum makes that question
-   * unanswerable by construction. Voluntary usage becomes an outcome we report rather
-   * than a variable we suppress.
+   * History: v5.2 applied it to all three arms, v5.4 dropped control, v5.5–v5.12 applied
+   * it to nobody because voluntary use was itself a pilot finding. v6 moves the primary
+   * outcome to BEHAVIOUR after training, and behaviour change needs every AI-arm reader to
+   * have been through the manipulation: under voluntary use some readers never opened the
+   * assistant, and with fifteen per arm they dilute any effect (plan §9 #1, decided by WCC
+   * under the supervisor's delegation, 2026-09-29).
    *
-   * WHAT THIS COSTS, to be written into the limitations:
-   *  1. The socratic-vs-direct comparison loses its exposure match. If one arm marks five
-   *     sentences and the other two, an S5 difference mixes "questioned rather than told"
-   *     with "consumed more assistance". Amount of use has to enter the analysis as a
-   *     covariate or a mediator; it can no longer be assumed equal.
-   *  2. A reader who marks nothing is, for that session, an untreated participant in a
-   *     treated arm. Intention-to-treat still includes them — that is the point of ITT —
-   *     but with fifteen per arm a few non-users noticeably dilute any effect.
-   *  3. `progression.lowerBoundMetRate` changes meaning: it was a feasibility check on a
-   *     requirement, and is now a straight measure of how many readers chose to use all
-   *     four. It stays on the dashboard because that number is now the interesting one.
+   * WHAT THIS COSTS: "will students voluntarily use a questioning AI?" can now be answered
+   * only from the FREE highlights outside the required targets. Those remain voluntary and
+   * are still logged (`interactions.inTargetSentence` is null for them).
    *
-   * WHAT REPLACES IT: `minReadingSeconds`, for every arm, so time on the passage stays
-   * comparable even when usage does not. That is now the only matched quantity.
+   * Control is never gated: it has no AI turn that could "finish" a sentence. It sees the
+   * same shaded sentences and only reads (plan: 無 AI 組只讀不寫), so it gets no forced
+   * try-first practice that would itself raise its S5a score.
    */
-  lowerBoundArms: [] as readonly string[],
+  lowerBoundArms: ['socratic', 'direct'] as readonly string[],
 
   /**
-   * Which arms see the four target sentences shaded.
+   * Which arms see the required target sentences shaded.
    *
-   * NOW EMPTY: nobody sees them. A shaded sentence is a cue whether or not it is also a
-   * requirement — the reader reads it as "this is the bit that matters" — so leaving the
-   * shading in while removing the quota still shapes where people look. Reading is now
-   * entirely unguided in all three arms.
-   *
-   * THIS DOES NOT DISABLE THE PRE-WRITTEN LADDERS. `matchTarget` keys off the selected
-   * TEXT, not off the shading: a reader who happens to select 「以鐵如意擊之」 still gets
-   * TS1's hand-written rungs. What is lost is the nudge towards them, so expect a larger
-   * share of socratic-arm turns to come from model-generated questions, which nothing
-   * validates at run time. That share is worth reporting: `interactions.inTargetSentence`
-   * is null for exactly those turns.
+   * v6: ALL THREE. Once the targets are required in the AI arms they must be visible, and
+   * control sees the same shading so all three arms are pointed at the same sentences.
+   * Only `required` targets are shaded; optional pre-written ladders (TS2, TS3) still fire
+   * when a reader happens to select them, exactly as in v5.
    */
-  targetHintArms: [] as readonly string[],
+  targetHintArms: ['socratic', 'direct', 'control'] as readonly string[],
 
   /**
-   * Minimum dwell time on S2, in seconds, before the continue button unlocks — now for
-   * EVERY arm, since nothing else is matched. Without it a reader can leave S2 in twenty
-   * seconds and the passage was never read at all. Set to 0 to remove it entirely.
+   * Minimum dwell time on EACH training passage, in seconds, before 下一篇 unlocks — every
+   * arm. Time is still the matched quantity across arms. Set to 0 to remove it.
    */
   minReadingSeconds: 180,
 
@@ -112,11 +117,17 @@ export const CONFIG = {
     fullscreen: true,
     warnBeforeLeaving: true,
     /** stages where a test is actually in progress */
-    stages: ['S1', 'S2', 'S3', 'S5', 'S6'] as readonly string[],
+    stages: ['S1', 'S1b', 'S2', 'S5b', 'S5a'] as readonly string[],
   },
 
   /** Reason gate. */
-  maxReasonRejections: 2, // third attempt is force-accepted and flagged
+  /**
+   * After this many rejected reasons on one rung, the next reason is force-accepted,
+   * flagged (`ladder.reasonInsufficient`) and logged as `reason_forced`. v6 applies it to
+   * the open-answer path too (D7): with required targets, a reader stuck at the gate
+   * could otherwise never leave the passage.
+   */
+  maxReasonRejections: 2,
   reasonMinChars: 4,
 
   /** Socratic ladder: layer1 -> layer2 -> layer3(choice+reason) -> explanation. */

@@ -129,7 +129,7 @@ export function lowerBoundApplies(arm: Arm): boolean {
   return CONFIG.lowerBoundArms.includes(arm);
 }
 
-/** Whether this arm sees the four target sentences shaded. AI arms yes, control no. */
+/** Whether this arm sees the required target sentences shaded (v6: every arm). */
 export function showsTargetHints(arm: Arm): boolean {
   return CONFIG.targetHintArms.includes(arm);
 }
@@ -147,5 +147,12 @@ export function lowerBoundMet(
 ): boolean {
   if (arm && !lowerBoundApplies(arm)) return true;
   const done = new Set(completedTargetIds);
-  return passage.targets.every((t) => done.has(t.id));
+  return requiredTargets(passage).every((t) => done.has(t.id));
+}
+
+/** v6: the targets that gate a passage and are shaded. Falls back to all targets when a
+ *  passage marks none as required (v5 data, unit fixtures). */
+export function requiredTargets(passage: Passage) {
+  const marked = passage.targets.filter((t) => t.required);
+  return marked.length ? marked : passage.targets;
 }

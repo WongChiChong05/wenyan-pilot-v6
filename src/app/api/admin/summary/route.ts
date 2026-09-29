@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { ITEMS_BY_STAGE } from '@/content/items';
+import { ALL_TARGETS, TRAINING_PASSAGES } from '@/content/passages';
 import { CONFIG } from '@/lib/config';
 import { leakRate } from '@/lib/leak';
 import { cronbachAlpha, itemStats } from '@/lib/scoring';
@@ -23,10 +24,10 @@ export async function GET(req: Request) {
   const responses = await store.listResponses();
   const interactions = await store.listInteractions();
   const events = await store.listEvents();
+  const translations = await store.listTranslations();
 
   const started = participants.filter((p) => p.stage !== 'S0');
-  const finishedMain = participants.filter((p) => ['S6', 'DONE'].includes(p.stage));
-  const finishedDelayed = participants.filter((p) => p.stage === 'DONE');
+  const finishedMain = participants.filter((p) => p.stage === 'DONE');
 
   const byArm = (arm: Arm) => participants.filter((p) => p.arm === arm).length;
 
@@ -58,10 +59,22 @@ export async function GET(req: Request) {
       neverUsedRate: inArm.length
         ? perReader.filter((x) => x.highlights === 0).length / inArm.length
         : 0,
-      usedAllFourRate: inArm.length
-        ? perReader.filter((x) => x.targets === 4).length / inArm.length
-        : 0,
+      requiredTargets: ALL_TARGETS.filter((t) => t.required).length,
     };
+  });
+
+  /**
+   * v6 PRIMARY OUTCOME, descriptively: share of sentences tried before any help, per arm
+   * and phase (S1b baseline, S5a post-test). The mixed-effects model runs offline on the
+   * exported translations table; this is only the dashboard view.
+   */
+  const triedFirstByArm = (['socratic', 'direct', 'control'] as Arm[]).map((arm) => {
+    const ids = new Set(participants.filter((p) => p.arm === arm).map((p) => p.id));
+    const rate = (stage: 'S1b' | 'S5a') => {
+      const rows = translations.filter((r) => ids.has(r.participantId) && r.stage === stage && !r.timedOut);
+      return { n: rows.length, triedFirst: rows.length ? rows.filter((r) => r.triedFirst).length / rows.length : null };
+    };
+    return { arm, S1b: rate('S1b'), S5a: rate('S5a') };
   });
 
   // A descriptive flag is not an exclusion. Counting "chose not to use the assistant" as
@@ -70,10 +83,10 @@ export async function GET(req: Request) {
     p.excludeFlags.some((f) => !CONFIG.exclusion.descriptiveOnly.includes(f))
   ).length;
 
-  const s5Items = ITEMS_BY_STAGE.S5;
+  const s5Items = ITEMS_BY_STAGE.S5b;
   const matrix: number[][] = [];
   for (const p of participants) {
-    const rows = responses.filter((r) => r.participantId === p.id && r.stage === 'S5');
+    const rows = responses.filter((r) => r.participantId === p.id && r.stage === 'S5b');
     if (rows.length === s5Items.length) {
       matrix.push(s5Items.map((i) => (rows.find((r) => r.itemId === i.id)?.correct ? 1 : 0)));
     }
@@ -99,24 +112,21 @@ export async function GET(req: Request) {
       ).length,
     },
     usageByArm,
+    triedFirstByArm,
     progression: {
       completionRate: started.length ? finishedMain.length / started.length : 0,
       completionRateThreshold: CONFIG.progression.completionRate,
-      delayedReturnRate: finishedMain.length ? finishedDelayed.length / finishedMain.length : 0,
-      delayedReturnRateThreshold: CONFIG.progression.delayedReturnRate,
       leakRateSocratic: leakRate(socraticTurns),
       leakRateThreshold: CONFIG.progression.maxLeakRate,
-      // No longer a compliance check. Nobody is required to use all four, so this is now
-      // a straight measure of how many readers chose to — keep the threshold in view as a
-      // reference line, not as a pass/fail.
-      usedAllFourRate: started.length ? lowerBoundMetCount / started.length : 0,
-      usedAllFourReference: CONFIG.progression.lowerBoundMetRate,
+      // v6: one lower_bound_met event per training passage finished on its required targets.
+      requiredPassagesMetRate: started.length ? lowerBoundMetCount / (started.length * TRAINING_PASSAGES.length) : 0,
+      requiredPassagesMetReference: CONFIG.progression.lowerBoundMetRate,
       reasonInsufficientRate: readDone ? reasonInsufficient / readDone : 0,
       reasonInsufficientThreshold: CONFIG.progression.maxReasonInsufficientRate,
-      alphaS5: matrix.length >= 2 ? cronbachAlpha(matrix) : null,
+      alphaS5bDecode: matrix.length >= 2 ? cronbachAlpha(matrix) : null,
       alphaThreshold: CONFIG.progression.minAlphaS5,
     },
-    itemStatsS5:
+    itemStatsS5bDecode:
       matrix.length >= 2
         ? itemStats(matrix).map((s, i) => ({ itemId: s5Items[i].id, ...s }))
         : [],

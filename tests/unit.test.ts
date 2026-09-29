@@ -5,6 +5,7 @@ import {
   lowerBoundMet,
   matchTarget,
   neighborhoodOf,
+  requiredTargets,
   sentenceRanges,
   showsTargetHints,
 } from '../src/lib/highlight';
@@ -21,7 +22,7 @@ import { assignArm, mulberry32, stratumOf } from '../src/lib/randomize';
 import { ruleCheckReason, shouldForceAccept } from '../src/lib/reasonGate';
 import { cohensKappa, cronbachAlpha, itemStats, scoreQuiz } from '../src/lib/scoring';
 import { openFinalQuestion, reasonJudgePrompt, socraticOpenSystemPrompt, socraticSystemPrompt, socraticTurnPrompt } from '../src/lib/prompts';
-import { LEARNING_PASSAGE } from '../src/content/passages';
+import { LEARNING_PASSAGE, TRAINING_PASSAGES } from '../src/content/passages';
 import type { Item } from '../src/lib/types';
 import { fallbackFocusOptions, focusOccursInSelection, validateFocusOptions } from '../src/lib/focus';
 
@@ -176,36 +177,33 @@ describe('target matching and the lower bound', () => {
   it('returns null for a free highlight', () => {
     expect(matchTarget(LEARNING_PASSAGE, '帝甚不平')).toBeNull();
   });
-  it('is met only when every target has been completed', () => {
+  it('v6: is met when the passage\'s required targets (TS1, TS4) are completed', () => {
     expect(lowerBoundMet(LEARNING_PASSAGE, ['TS1', 'TS2', 'TS3'])).toBe(false);
-    expect(lowerBoundMet(LEARNING_PASSAGE, ['TS1', 'TS2', 'TS3', 'TS4'])).toBe(true);
+    expect(lowerBoundMet(LEARNING_PASSAGE, ['TS1', 'TS4'])).toBe(true);
+    expect(requiredTargets(LEARNING_PASSAGE).map(t => t.id)).toEqual(['TS1', 'TS4']);
   });
 
-  // Usage is voluntary in every arm now: how much of the assistant a reader chooses is
-  // the thing being observed, so nothing gates on it. The four-sentence milestone is
-  // still COMPUTED, because it is reported as a result.
-  it('gates no arm', () => {
-    expect(lowerBoundApplies('socratic')).toBe(false);
-    expect(lowerBoundApplies('direct')).toBe(false);
+  // v6: the two AI arms must finish each passage's required targets; control is never
+  // gated because it has no AI turn that could finish a sentence.
+  it('gates the AI arms only', () => {
+    expect(lowerBoundApplies('socratic')).toBe(true);
+    expect(lowerBoundApplies('direct')).toBe(true);
     expect(lowerBoundApplies('control')).toBe(false);
   });
-  it('reports met for every arm whatever they marked, so nobody is blocked', () => {
+  it('reports met for control whatever it marked, and not for an AI arm with nothing done', () => {
+    expect(lowerBoundMet(LEARNING_PASSAGE, [], 'control')).toBe(true);
+    expect(lowerBoundMet(LEARNING_PASSAGE, [], 'socratic')).toBe(false);
+    expect(lowerBoundMet(LEARNING_PASSAGE, ['TS1', 'TS4'], 'direct')).toBe(true);
+  });
+  it('shades the required targets for every arm', () => {
     for (const arm of ['socratic', 'direct', 'control'] as const) {
-      expect(lowerBoundMet(LEARNING_PASSAGE, [], arm)).toBe(true);
-      expect(lowerBoundMet(LEARNING_PASSAGE, ['TS1'], arm)).toBe(true);
+      expect(showsTargetHints(arm)).toBe(true);
     }
   });
-  // Called without an arm it is still the plain four-sentence predicate, which is what
-  // the `targets_incomplete` flag and the usage dashboard are built on.
-  it('still computes the real milestone when no arm is passed', () => {
-    expect(lowerBoundMet(LEARNING_PASSAGE, ['TS1'])).toBe(false);
-    expect(lowerBoundMet(LEARNING_PASSAGE, ['TS1', 'TS2', 'TS3', 'TS4'])).toBe(true);
-  });
-  // Nothing is shaded for anyone now: a shaded sentence is a cue even without a quota.
-  it('shades the target sentences for nobody', () => {
-    for (const arm of ['socratic', 'direct', 'control'] as const) {
-      expect(showsTargetHints(arm)).toBe(false);
-    }
+  it('every training passage has exactly two required targets with unique ids', () => {
+    const ids = TRAINING_PASSAGES.flatMap(p => p.targets.map(t => t.id));
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const p of TRAINING_PASSAGES) expect(p.targets.filter(t => t.required)).toHaveLength(2);
   });
   // ...but the hand-written ladders still fire on the TEXT, not on the shading.
   it('still matches a target sentence the reader happened to select', () => {

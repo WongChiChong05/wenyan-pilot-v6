@@ -2,7 +2,7 @@ import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { MemoryStore, makeParticipant } from './memoryStore';
-import { advanceStage, assist, readState, recordEvent, submitQuiz, submitScale, createSession } from '../src/lib/study';
+import { advanceStage, assist, recordEvent, submitQuiz, submitScale, createSession, translate } from '../src/lib/study';
 import { api, bodyOf } from '../src/lib/api';
 import { CONFIG } from '../src/lib/config';
 
@@ -14,22 +14,42 @@ describe('server-side study boundary', () => {
     await store.updateParticipant(p.id, { stage: 'S1' });
     await assert.rejects(advanceStage(store, { token: p.token, reason: 'user', elapsedSeconds: 9999 }));
   });
-  it('enforces S6 token, window, and start on submission as well as viewing', async () => {
-    const store = new MemoryStore(); const p = makeParticipant('control'); p.stage = 'S6';
-    p.stageEnteredTs.S6 = new Date().toISOString(); await store.createParticipant(p);
-    await store.createContact({ participantId: p.id, email: 'reader@example.com', createdTs: new Date().toISOString() });
-    const submission = { token: p.delayedToken, delayed: true, stage: 'S6', answers: [] };
-    await assert.rejects(submitQuiz(store, submission));
-    await store.updateParticipant(p.id, { stageEnteredTs: { S6: new Date(Date.now() - 25 * 3600000).toISOString() } });
-    await assert.rejects(submitQuiz(store, { ...submission, token: p.token, delayed: false }));
-    await assert.rejects(submitQuiz(store, submission));
-    const view = await store.transaction(tx => readState(tx, p.delayedToken, true));
-    assert.equal(view.stage, 'S6'); assert.equal(view.seconds.max, CONFIG.stageSeconds.S6.max);
-    await submitQuiz(store, submission);
-    assert.equal((await store.getParticipant(p.id))?.stage, 'DONE');
-    assert.equal((await store.listContacts())[0].email, null);
-    assert.ok((await store.listContacts())[0].emailDeletedTs);
-    assert.equal((await readState(store, p.delayedToken, true)).stage, 'DONE');
+  it('v6: records the first-help snapshot, refuses stale sentences and gives S5b no help', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('control'); p.stage = 'S1b';
+    const now = new Date().toISOString();
+    p.stageEnteredTs.S1b = now; p.progress = { trainingIndex: 0, passageEnteredTs: [], translation: { stage: 'S1b', index: 0, shownTs: now } };
+    await store.createParticipant(p);
+    await assert.rejects(translate(store, { token: p.token, index: 1, action: 'submit', text: '譯文' }));
+    const hint = await translate(store, { token: p.token, index: 0, action: 'help', kind: 'hint', draft: '彭' }) as { text: string };
+    assert.ok(hint.text.length > 0);
+    await translate(store, { token: p.token, index: 0, action: 'help', kind: 'explanation', draft: '彭城王有' });
+    await translate(store, { token: p.token, index: 0, action: 'submit', text: '彭城王有快牛', firstInputMs: 1200 });
+    const row = (await store.listTranslations())[0];
+    // One Han character before the first help press: not tried first, whatever came later.
+    assert.equal(row.triedFirst, false); assert.equal(row.firstHelpKind, 'hint'); assert.equal(row.draftAtFirstHelp, '彭');
+    assert.ok(row.hintMs !== null && row.explanationMs !== null); assert.equal(row.firstInputMs, 1200);
+    await translate(store, { token: p.token, index: 1, action: 'skip', draft: '王太尉' });
+    const skipped = (await store.listTranslations())[1];
+    assert.equal(skipped.skipped, true); assert.equal(skipped.firstHelpKind, 'skip'); assert.equal(skipped.triedFirst, true);
+    await translate(store, { token: p.token, index: 2, action: 'submit', text: '若要吃' });
+    assert.equal((await store.getParticipant(p.id))!.stage, 'S2');
+    const noHelp = makeParticipant('direct'); noHelp.stage = 'S5b';
+    noHelp.stageEnteredTs.S5b = now; noHelp.progress = { trainingIndex: 2, passageEnteredTs: [], translation: { stage: 'S5b', index: 0, shownTs: now } };
+    await store.createParticipant(noHelp);
+    await assert.rejects(translate(store, { token: noHelp.token, index: 0, action: 'help', kind: 'hint', draft: '' }));
+    await assert.rejects(submitQuiz(store, { token: noHelp.token, stage: 'S5b', answers: [] }));
+  });
+  it('v6: a translation timeout keeps what was typed and marks unseen sentences', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('socratic'); p.stage = 'S5a';
+    const then = new Date(Date.now() - 601000).toISOString();
+    p.stageEnteredTs.S5a = then; p.progress = { trainingIndex: 2, passageEnteredTs: [], translation: { stage: 'S5a', index: 0, shownTs: then } };
+    await store.createParticipant(p);
+    await translate(store, { token: p.token, action: 'timeout', draft: '王丞相節儉' });
+    const rows = await store.listTranslations();
+    assert.equal(rows.length, 3); assert.equal(rows[0].text, '王丞相節儉'); assert.equal(rows[0].triedFirst, true);
+    assert.ok(rows.every(r => r.timedOut)); assert.equal(rows[2].triedFirst, false);
+    const after = (await store.getParticipant(p.id))!;
+    assert.equal(after.stage, 'DONE'); assert.ok(after.excludeFlags.includes('timeout_S5a'));
   });
   it('requires demographics and stores email outside participant research data', async () => {
     const missing = { consent: true, chineseMajor: false, readBefore: false, aiUsage: '每週數次' };
@@ -46,20 +66,33 @@ describe('server-side study boundary', () => {
     assert.equal(p.demographics.email, undefined);
     assert.equal((await store.listContacts())[0].email, 'student@example.com');
   });
-  it('refuses expired delayed submissions without deleting the participant', async () => {
-    const store = new MemoryStore(); const p = makeParticipant('control'); p.stage = 'S6';
-    p.stageEnteredTs.S6 = new Date(Date.now() - 49 * 3600000).toISOString(); p.delayedStartedTs = new Date().toISOString();
-    await store.createParticipant(p);
-    await assert.rejects(submitQuiz(store, { token: p.delayedToken, delayed: true, stage: 'S6', answers: [] }));
-    assert.equal((await store.listParticipants()).length, 1);
-  });
-  it('keeps voluntary nonusers when leaving S2', async () => {
+  it('keeps voluntary nonusers when leaving S2, one training passage at a time', async () => {
     const store = new MemoryStore(); const p = makeParticipant('control');
-    p.stageEnteredTs.S2 = new Date(Date.now() - 181000).toISOString(); await store.createParticipant(p);
-    await advanceStage(store, { token: p.token, reason: 'user' });
+    const early = new Date(Date.now() - 181000).toISOString();
+    p.stageEnteredTs.S2 = early; p.progress = { trainingIndex: 0, passageEnteredTs: [early] };
+    await store.createParticipant(p);
+    for (let i = 0; i < 3; i++) {
+      const cur = (await store.getParticipant(p.id))!;
+      assert.equal(cur.progress?.trainingIndex, i);
+      if (i > 0) await store.updateParticipant(p.id, { progress: { ...cur.progress!, passageEnteredTs: cur.progress!.passageEnteredTs.map((ts, j) => (j === i ? early : ts)) } });
+      await advanceStage(store, { token: p.token, reason: 'user' });
+    }
     const after = (await store.getParticipant(p.id))!;
     assert.equal(after.stage, 'S4'); assert.ok(after.excludeFlags.includes('no_assist_used'));
+    assert.ok(after.excludeFlags.includes('targets_incomplete'));
     assert.ok(after.excludeFlags.every(flag => CONFIG.exclusion.descriptiveOnly.includes(flag)));
+    const leaves = (await store.listEvents()).filter(e => e.event === 'passage_leave');
+    assert.deepEqual(leaves.map(e => e.payload.passageId), ['T2', 'T5', 'T6']);
+  });
+  it('v6: an AI-arm reader cannot leave a passage before its two required targets', async () => {
+    const store = new MemoryStore(); const p = makeParticipant('direct');
+    const early = new Date(Date.now() - 181000).toISOString();
+    p.stageEnteredTs.S2 = early; p.progress = { trainingIndex: 0, passageEnteredTs: [early] };
+    await store.createParticipant(p);
+    await assert.rejects(advanceStage(store, { token: p.token, reason: 'user' }));
+    await store.updateParticipant(p.id, { completedTargets: ['TS1', 'TS4'] });
+    const out = await advanceStage(store, { token: p.token, reason: 'user' }) as { trainingIndex?: number };
+    assert.equal(out.trainingIndex, 1);
   });
   it('rejects forged audit events and malformed requests', async () => {
     const store = new MemoryStore(); const p = makeParticipant('control'); await store.createParticipant(p);
@@ -85,7 +118,7 @@ describe('server-side study boundary', () => {
     assert.equal(row.germaneMean, 6);
     assert.equal(row.extraneousMean, 3);
     assert.equal(row.mentalEffort, undefined);
-    assert.equal((await store.getParticipant(p.id))?.stage, 'S3');
+    assert.equal((await store.getParticipant(p.id))?.stage, 'S5b');
   });
   it('accepts the browser-facing host but rejects a foreign origin', async () => {
     const request = (origin: string) => new Request('http://localhost:3001/api/session', {

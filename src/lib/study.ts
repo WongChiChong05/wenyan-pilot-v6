@@ -1,17 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import { ALL_ITEMS, ITEMS_BY_STAGE } from '../content/items';
-import { LEARNING_PASSAGE, PASSAGES } from '../content/passages';
+import { ITEMS_BY_STAGE } from '../content/items';
+import { TRAINING_PASSAGES } from '../content/passages';
+import { TRANSLATION_BY_STAGE } from '../content/translation';
 import { ApiError, delayedFlag, insist, object, string, token } from './api';
 import { CONFIG } from './config';
 import { cognitiveLoadMeans, validCognitiveLoadRatings, type CognitiveLoadRatings } from './cognitiveLoad';
 import { validateContent } from './contentValidation';
-import { Engine, isCancellable, nextStage, pendingTurnFor, stageLimits } from './engine';
+import { Engine, isCancellable, nextStage, pendingTurnFor, stageLimits, trainingPassageFor } from './engine';
 import { focusOccursInSelection } from './focus';
 import { lowerBoundApplies, lowerBoundMet } from './highlight';
 import { assignArm, stratumOf } from './randomize';
 import { scoreQuiz, type SubmittedAnswer } from './scoring';
 import type { Store } from './store';
-import type { Arm, EventRow, Participant, Stage } from './types';
+import type { Arm, EventRow, Participant, Progress, Stage, TranslationRow, TranslationStage } from './types';
 import { buildStageView } from './view';
 
 type Body = Record<string, unknown>;
@@ -45,7 +46,9 @@ export function assertAccess(p: Participant, delayed: boolean) {
   } else insist(p.stage !== 'S6' && p.stage !== 'DONE', 'use delayed test link', 409);
 }
 export function elapsedSeconds(p: Participant): number {
-  const start = p.stage === 'S6' ? p.delayedStartedTs : p.stageEnteredTs[p.stage];
+  // v6: S2 is timed per training passage; every other stage from when it was entered.
+  const passageStart = p.stage === 'S2' ? p.progress?.passageEnteredTs[p.progress.trainingIndex] : undefined;
+  const start = p.stage === 'S6' ? p.delayedStartedTs : passageStart ?? p.stageEnteredTs[p.stage];
   const time = Date.parse(start ?? '');
   insist(Number.isFinite(time), 'stage not started', 409);
   return Math.max(0, Math.floor((Date.now() - time) / 1000));
@@ -56,11 +59,22 @@ async function participant(store: Store, body: Body) {
   insist(p, 'unknown token', 404);
   return { p, delayed };
 }
+const isTranslationStage = (stage: Stage): stage is TranslationStage => stage === 'S1b' || stage === 'S5a' || stage === 'S5b';
+const hanCount = (text: string) => [...text].filter(c => /[\u3400-\u9fff]/u.test(c)).length;
+
 async function enter(store: Store, p: Participant, patch: Partial<Participant> = {}) {
   const stage = nextStage(p.stage);
   const now = iso();
-  await store.updateParticipant(p.id, { ...patch, stage, active: null, stageEnteredTs: { ...p.stageEnteredTs, [stage]: now } });
+  const base: Progress = patch.progress ?? p.progress ?? { trainingIndex: 0, passageEnteredTs: [] };
+  let progress: Progress = { ...base, translation: null };
+  // v6: entering S2 starts the first training passage; entering a translation stage shows
+  // its first sentence. Both clocks are server-side.
+  if (stage === 'S2') progress = { trainingIndex: 0, passageEnteredTs: [now], translation: null };
+  if (isTranslationStage(stage)) progress = { ...progress, translation: { stage, index: 0, shownTs: now } };
+  await store.updateParticipant(p.id, { ...patch, progress, stage, active: null, stageEnteredTs: { ...p.stageEnteredTs, [stage]: now } });
   await addEvent(store, p.id, 'stage_enter', { stage });
+  if (stage === 'S2') await addEvent(store, p.id, 'passage_enter', { index: 0, passageId: TRAINING_PASSAGES[0].id });
+  if (isTranslationStage(stage)) await addEvent(store, p.id, 'translation_shown', { stage, index: 0, itemId: TRANSLATION_BY_STAGE[stage][0]?.id });
   return { ok: true, stage };
 }
 
@@ -115,6 +129,8 @@ export async function submitQuiz(store: Store, body: Body) {
   }
   assertAccess(p, delayed);
   const elapsed = elapsedSeconds(p);
+  // v6: the S5b decode items come after its translation sentences.
+  if (p.stage === 'S5b') insist(p.progress?.translation?.translationsDone, 'translations not finished', 409);
   const items = ITEMS_BY_STAGE[body.stage];
   insist(Array.isArray(body.answers) && body.answers.length <= items.length, 'invalid answers');
   const seen = new Set<string>();
@@ -140,10 +156,6 @@ export async function submitQuiz(store: Store, body: Body) {
   if (elapsed < limits.min) flags.push(`below_min_time_${p.stage}`);
   if (timedOut) flags.push(`timeout_${p.stage}`);
   for (const row of scored.rows.filter(r => r.chosen === null)) await addEvent(store, p.id, 'item_skip', { stage: p.stage, itemId: row.itemId });
-  if (p.stage === 'S6') {
-    const contact = (await store.listContacts()).find(row => row.participantId === p.id);
-    if (contact?.email) await store.updateContact(p.id, { email: null, emailDeletedTs: now });
-  }
   const patch: Partial<Participant> = { excludeFlags: [...new Set(flags)] };
   if (p.stage === 'S1') {
     const cuts = { low: Number(process.env.STRATUM_LOW ?? 3), high: Number(process.env.STRATUM_HIGH ?? 6) };
@@ -166,13 +178,140 @@ export async function advanceStage(store: Store, body: Body) {
   const timedOut = elapsed >= stageLimits('S2').max;
   if (body.reason === 'timeout') insist(timedOut, 'timeout not reached', 409);
   insist(timedOut || elapsed >= CONFIG.minReadingSeconds, 'minimum reading time not reached', 409);
-  if (lowerBoundApplies(p.arm)) insist(timedOut || lowerBoundMet(LEARNING_PASSAGE, p.completedTargets, p.arm), 'lower bound not met', 409);
+  // v6: the lower bound is checked PER TRAINING PASSAGE (its two required targets).
+  const index = p.progress?.trainingIndex ?? 0;
+  const passage = trainingPassageFor(p);
+  if (lowerBoundApplies(p.arm)) insist(timedOut || lowerBoundMet(passage, p.completedTargets, p.arm), 'lower bound not met', 409);
   const flags = [...p.excludeFlags];
-  if (!lowerBoundMet(LEARNING_PASSAGE, p.completedTargets)) flags.push('targets_incomplete');
-  if (!(await store.listInteractions(p.id)).length) flags.push('no_assist_used');
+  // Which passage was incomplete or timed out is in the passage_leave event; the flags stay
+  // the v5 names so CONFIG.exclusion.descriptiveOnly keeps meaning the same thing.
+  const targetsComplete = lowerBoundMet(passage, p.completedTargets);
+  if (!targetsComplete) flags.push('targets_incomplete');
   if (timedOut) flags.push('timeout_S2');
+  await addEvent(store, p.id, 'passage_leave', { index, passageId: passage.id, reason: timedOut ? 'timeout' : body.reason, elapsedSeconds: elapsed, targetsComplete });
+  if (index < TRAINING_PASSAGES.length - 1) {
+    const now = iso();
+    const progress: Progress = {
+      trainingIndex: index + 1,
+      passageEnteredTs: [...(p.progress?.passageEnteredTs ?? []), now],
+      translation: null,
+    };
+    // A timeout can land mid-ladder; the open interaction is dropped, never carried over.
+    await store.updateParticipant(p.id, { progress, active: null, excludeFlags: [...new Set(flags)] });
+    await addEvent(store, p.id, 'passage_enter', { index: index + 1, passageId: TRAINING_PASSAGES[index + 1].id });
+    return { ok: true, stage: 'S2', trainingIndex: index + 1 };
+  }
+  if (!(await store.listInteractions(p.id)).length) flags.push('no_assist_used');
   await addEvent(store, p.id, 'stage_leave', { stage: p.stage, reason: timedOut ? 'timeout' : body.reason, elapsedSeconds: elapsed });
   return enter(store, p, { excludeFlags: [...new Set(flags)] });
+}
+
+/**
+ * v6 sentence translation (S1b, S5a, S5b). One sentence at a time; the server keeps the
+ * position, the clocks and the first-help snapshot, so the behaviour measures do not
+ * depend on anything the client claims except the first-keystroke time.
+ *
+ * Actions: help {kind: hint|explanation, draft} (S1b/S5a only), skip {draft}, submit {text},
+ * timeout. Every action carries `index`, the sentence the client is showing; a stale index
+ * is refused so a double click cannot answer the next sentence.
+ */
+export async function translate(store: Store, body: Body) {
+  const { p, delayed } = await participant(store, body);
+  insist(!delayed && isTranslationStage(p.stage), 'translation closed', 409);
+  const stage = p.stage as TranslationStage;
+  const state = p.progress?.translation;
+  insist(state && state.stage === stage && !state.translationsDone, 'translation closed', 409);
+  const items = TRANSLATION_BY_STAGE[stage];
+  const elapsed = elapsedSeconds(p);
+  const limits = stageLimits(stage);
+  const now = Date.now();
+  const since = (ts?: string) => (ts ? Math.max(0, now - Date.parse(ts)) : null);
+  const draft = (value: unknown) => (value === undefined || value === null ? '' : string(value, 'draft', 2000));
+  const firstInput = (value: unknown) => {
+    insist(value === undefined || value === null || (Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 2147483647), 'invalid firstInputMs');
+    return value === undefined || value === null ? null : Number(value);
+  };
+  const progressOf = (translation: NonNullable<Progress['translation']>): Progress => ({
+    trainingIndex: p.progress?.trainingIndex ?? 0, passageEnteredTs: p.progress?.passageEnteredTs ?? [], translation,
+  });
+  /** `help` is the sentence's progress snapshot; omitted for sentences never shown. */
+  const rowFor = (i: number, fields: Pick<TranslationRow, 'text' | 'skipped' | 'timedOut' | 'firstInputMs'>, help?: typeof state): TranslationRow => {
+    const offset = (ts?: string) => (help && ts ? Date.parse(ts) - Date.parse(help.shownTs) : null);
+    // Primary outcome: what was in the box when the reader first reached for help or skip;
+    // with no help at all, what they submitted.
+    const basis = help?.firstHelpKind ? help.draftAtFirstHelp ?? '' : fields.text;
+    return {
+      id: randomUUID(), participantId: p.id, stage, itemId: items[i].id, ...fields,
+      triedFirst: hanCount(basis) >= CONFIG.translation.triedFirstMinHan,
+      firstHelpKind: help?.firstHelpKind ?? null,
+      firstHelpMs: offset(help?.firstHelpTs),
+      draftAtFirstHelp: help?.draftAtFirstHelp ?? null,
+      hintMs: offset(help?.hintTs),
+      explanationMs: offset(help?.explanationTs),
+      submitMs: help ? since(help.shownTs) ?? 0 : 0,
+      ts: iso(),
+    };
+  };
+  /** Move to the next sentence, or finish the translation part of the stage. */
+  const next = async (flags: string[] = [], timedOut = false) => {
+    const index = state.index + 1;
+    if (index < items.length && !timedOut) {
+      await store.updateParticipant(p.id, { progress: progressOf({ stage, index, shownTs: iso() }) });
+      await addEvent(store, p.id, 'translation_shown', { stage, index, itemId: items[index].id });
+      return { ok: true, stage, index };
+    }
+    const allFlags = [...new Set([...p.excludeFlags, ...flags])];
+    if (stage === 'S5b') {
+      // The decode items follow on the same stage clock.
+      await store.updateParticipant(p.id, { excludeFlags: allFlags, progress: progressOf({ ...state, translationsDone: true }) });
+      return { ok: true, stage, translationsDone: true };
+    }
+    if (elapsed < limits.min) allFlags.push(`below_min_time_${stage}`);
+    await addEvent(store, p.id, 'stage_leave', { stage, reason: timedOut ? 'timeout' : 'user', elapsedSeconds: elapsed });
+    return enter(store, p, { excludeFlags: [...new Set(allFlags)] });
+  };
+
+  if (body.action === 'timeout') {
+    insist(elapsed >= limits.max, 'timeout not reached', 409);
+    // Timeouts flag, never delete: the sentence on screen keeps what was typed; unseen
+    // sentences are recorded as not attempted.
+    const typed = draft(body.draft);
+    await store.addTranslation(rowFor(state.index, { text: typed, skipped: typed.trim().length === 0, timedOut: true, firstInputMs: firstInput(body.firstInputMs) }, state));
+    for (let i = state.index + 1; i < items.length; i++) {
+      await store.addTranslation(rowFor(i, { text: '', skipped: true, timedOut: true, firstInputMs: null }));
+    }
+    return next([`timeout_${stage}`], true);
+  }
+  insist(body.index === state.index, 'stale sentence; reload state', 409);
+  const item = items[state.index];
+
+  if (body.action === 'help') {
+    insist(stage !== 'S5b', 'no help in this stage', 409);
+    insist(body.kind === 'hint' || body.kind === 'explanation', 'invalid help kind');
+    const kind = body.kind as 'hint' | 'explanation';
+    const opened = kind === 'hint' ? state.hintTs : state.explanationTs;
+    if (!opened) {
+      const ts = iso();
+      const first = state.firstHelpKind ? {} : { firstHelpKind: kind, firstHelpTs: ts, draftAtFirstHelp: draft(body.draft) };
+      await store.updateParticipant(p.id, { progress: progressOf({ ...state, ...first, ...(kind === 'hint' ? { hintTs: ts } : { explanationTs: ts }) }) });
+      await addEvent(store, p.id, 'translation_help', { stage, itemId: item.id, kind, draft: draft(body.draft), elapsedMs: since(state.shownTs) });
+    }
+    return { ok: true, kind, text: kind === 'hint' ? item.hint ?? '' : item.explanation ?? '' };
+  }
+  if (body.action === 'skip') {
+    const typed = draft(body.draft);
+    const snapshot = state.firstHelpKind ? state : { ...state, firstHelpKind: 'skip' as const, firstHelpTs: iso(), draftAtFirstHelp: typed };
+    await store.addTranslation(rowFor(state.index, { text: typed, skipped: true, timedOut: false, firstInputMs: firstInput(body.firstInputMs) }, snapshot));
+    await addEvent(store, p.id, 'item_skip', { stage, itemId: item.id });
+    return next();
+  }
+  if (body.action === 'submit') {
+    const text = string(body.text, 'text', 2000);
+    insist(text.trim().length > 0, 'empty translation; use skip');
+    await store.addTranslation(rowFor(state.index, { text, skipped: false, timedOut: false, firstInputMs: firstInput(body.firstInputMs) }, state));
+    return next();
+  }
+  throw new ApiError(400, 'unknown action');
 }
 
 export async function assist(store: Store, body: Body) {
@@ -182,9 +321,10 @@ export async function assist(store: Store, body: Body) {
   const engine = new Engine(store);
   if (body.action === 'highlight') {
     insist(!p.active, 'interaction in progress', 409);
-    const selection = string(body.selection, 'selection', LEARNING_PASSAGE.text.length + 100);
+    const passage = trainingPassageFor(p);
+    const selection = string(body.selection, 'selection', passage.text.length + 100);
     insist(body.start === undefined || (Number.isInteger(body.start) && Number(body.start) >= 0), 'invalid selection offset');
-    insist(selection.trim().length && LEARNING_PASSAGE.text.replace(/\s/g, '').includes(selection.replace(/\s/g, '')), 'selection is not part of the passage');
+    insist(selection.trim().length && passage.text.replace(/\s/g, '').includes(selection.replace(/\s/g, '')), 'selection is not part of the passage');
     return engine.startAssist(p, selection, body.start as number | undefined);
   }
   insist(p.active, 'no open interaction', 409);
@@ -241,7 +381,7 @@ export async function recordEvent(store: Store, body: Body) {
   const { p, delayed } = await participant(store, body);
   assertAccess(p, delayed);
   insist(CONFIG.proctor.stages.includes(p.stage), 'events closed', 409);
-  if (body.event === 'annotation_click') insist(p.stage === 'S2', 'annotations closed', 409);
+  if (body.event === 'annotation_click') insist(p.stage === 'S2' || isTranslationStage(p.stage), 'annotations closed', 409);
   await addEvent(store, p.id, body.event as EventRow['event'], { ...object(body.payload ?? {}), stage: p.stage });
   const away = ['visibility_change', 'fullscreen_exit'];
   if (away.includes(body.event)) {

@@ -49,7 +49,7 @@ async function main() {
     await client.query(command === 'dump' ? 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN');
     const store = new PostgresStore(pool, client);
     if (command === 'dump') {
-      const data: Db = { participants: await store.listParticipants(), responses: await store.listResponses(), interactions: await store.listInteractions(), events: await store.listEvents(), scales: await store.listScales(), contacts: await store.listContacts() };
+      const data: Db = { participants: await store.listParticipants(), responses: await store.listResponses(), interactions: await store.listInteractions(), events: await store.listEvents(), scales: await store.listScales(), contacts: await store.listContacts(), translations: await store.listTranslations() };
       await client.query('COMMIT');
       const folder = path.resolve('backups', new Date().toISOString().replace(/[:.]/g, '-'));
       await fs.mkdir(folder, { recursive: true });
@@ -60,11 +60,12 @@ async function main() {
       console.log(`Exported a consistent snapshot to ${folder}`);
     } else if (command === 'import') {
       // The lock blocks writes while checking emptiness and importing; there is no partial import.
-      await client.query('LOCK TABLE wenyan.participants, wenyan.responses, wenyan.interactions, wenyan.events, wenyan.scales, wenyan.participant_contacts IN ACCESS EXCLUSIVE MODE');
-      const existing = await client.query('SELECT (SELECT count(*) FROM wenyan.participants) + (SELECT count(*) FROM wenyan.responses) + (SELECT count(*) FROM wenyan.interactions) + (SELECT count(*) FROM wenyan.events) + (SELECT count(*) FROM wenyan.scales) + (SELECT count(*) FROM wenyan.participant_contacts) AS n');
+      await client.query('LOCK TABLE wenyan.participants, wenyan.responses, wenyan.interactions, wenyan.events, wenyan.scales, wenyan.participant_contacts, wenyan.translations IN ACCESS EXCLUSIVE MODE');
+      const existing = await client.query('SELECT (SELECT count(*) FROM wenyan.participants) + (SELECT count(*) FROM wenyan.responses) + (SELECT count(*) FROM wenyan.interactions) + (SELECT count(*) FROM wenyan.events) + (SELECT count(*) FROM wenyan.scales) + (SELECT count(*) FROM wenyan.participant_contacts) + (SELECT count(*) FROM wenyan.translations) AS n');
       if (Number(existing.rows[0].n) !== 0) throw new Error('Import requires an empty target database');
       const data = JSON.parse(await fs.readFile(path.resolve(process.argv[3] ?? 'data/db.json'), 'utf8')) as Db;
       if (!Array.isArray(data.contacts)) data.contacts = [];
+      if (!Array.isArray(data.translations)) data.translations = [];
       for (const key of ['participants', 'responses', 'interactions', 'events', 'scales', 'contacts'] as const) {
         if (!Array.isArray(data[key])) throw new Error(`Missing ${key} array`);
       }
@@ -75,6 +76,7 @@ async function main() {
       for (const r of data.events) await store.addEvent({ ...r, configVersion: r.configVersion ?? 'legacy-unrecorded' });
       for (const r of data.scales) await store.addScale({ ...r, configVersion: r.configVersion ?? 'legacy-unrecorded' });
       for (const r of data.contacts) await store.createContact({ ...r, configVersion: r.configVersion ?? 'legacy-unrecorded' });
+      for (const r of data.translations) await store.addTranslation({ ...r, configVersion: r.configVersion ?? 'legacy-unrecorded' });
       await client.query('COMMIT');
       console.log('Import committed. Source JSON was not changed.');
     } else throw new Error('Use migrate, dump, or import');

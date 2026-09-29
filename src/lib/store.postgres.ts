@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import type { Pool } from 'pg';
 import { CONFIG } from './config';
 import type { Store } from './store';
-import type { EventRow, InteractionRow, Participant, ParticipantContact, ResponseRow, ScaleRow } from './types';
+import type { EventRow, InteractionRow, Participant, ParticipantContact, ResponseRow, ScaleRow, TranslationRow } from './types';
 
 export interface SqlConnection {
   query(sql: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
@@ -11,12 +11,12 @@ export interface SqlPool extends SqlConnection {
   connect(): Promise<SqlConnection & { release(): void }>;
   end(): Promise<void>;
 }
-type Table = 'participants' | 'responses' | 'interactions' | 'events' | 'scales' | 'participant_contacts';
+type Table = 'participants' | 'responses' | 'interactions' | 'events' | 'scales' | 'participant_contacts' | 'translations';
 // Identifiers originate only from this allowlist, never from a request.
 const fields: Record<Table, string[]> = {
-  participants: ['id', 'token', 'delayedToken', 'arm', 'stage', 'stratum', 'pretestScore', 'consentTs', 'demographics', 'excludeFlags', 'stageEnteredTs', 'completedTargets', 'active', 'delayedStartedTs', 'studyConfig', 'configVersion'],
+  participants: ['id', 'token', 'delayedToken', 'arm', 'stage', 'stratum', 'pretestScore', 'consentTs', 'demographics', 'excludeFlags', 'stageEnteredTs', 'completedTargets', 'active', 'delayedStartedTs', 'studyConfig', 'progress', 'configVersion'],
   responses: ['id', 'participantId', 'stage', 'itemId', 'level', 'chosen', 'correct', 'rtMs', 'ts', 'configVersion'],
-  interactions: ['id', 'participantId', 'interactionId', 'inTargetSentence', 'granularity', 'highlightText', 'turnIndex', 'actor', 'type', 'text', 'strategy', 'latencyMs', 'rawResponse', 'leakFlags', 'generatedOptions', 'generatedAnswerIndex', 'degraded', 'ts', 'configVersion'],
+  interactions: ['id', 'participantId', 'passageId', 'interactionId', 'inTargetSentence', 'granularity', 'highlightText', 'turnIndex', 'actor', 'type', 'text', 'strategy', 'latencyMs', 'rawResponse', 'leakFlags', 'generatedOptions', 'generatedAnswerIndex', 'degraded', 'ts', 'configVersion'],
   events: ['id', 'participantId', 'event', 'payload', 'ts', 'configVersion'],
   scales: [
     'id', 'participantId',
@@ -26,8 +26,13 @@ const fields: Record<Table, string[]> = {
     'mentalEffort', 'load', 'frustration', 'selfEfficacy', 'ts', 'configVersion',
   ],
   participant_contacts: ['participantId', 'email', 'createdTs', 'emailSentTs', 'emailDeletedTs', 'configVersion'],
+  translations: [
+    'id', 'participantId', 'stage', 'itemId', 'text', 'skipped', 'timedOut', 'triedFirst',
+    'firstInputMs', 'firstHelpKind', 'firstHelpMs', 'draftAtFirstHelp', 'hintMs', 'explanationMs',
+    'submitMs', 'ts', 'configVersion',
+  ],
 };
-const jsonFields = new Set(['demographics', 'excludeFlags', 'stageEnteredTs', 'completedTargets', 'active', 'studyConfig', 'leakFlags', 'generatedOptions', 'payload']);
+const jsonFields = new Set(['demographics', 'excludeFlags', 'stageEnteredTs', 'completedTargets', 'active', 'studyConfig', 'progress', 'leakFlags', 'generatedOptions', 'payload']);
 const column = (key: string) => key.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`);
 const encode = (key: string, value: unknown) => value == null ? null : jsonFields.has(key) ? JSON.stringify(value) : value;
 function decode<T>(table: Table, row: Record<string, unknown>): T {
@@ -36,7 +41,7 @@ function decode<T>(table: Table, row: Record<string, unknown>): T {
     const value = row[column(key)];
     // Omit absent optional fields to preserve the JSON-store export shape.
     if (value == null && [
-      'delayedStartedTs', 'studyConfig', 'generatedOptions', 'generatedAnswerIndex', 'degraded',
+      'delayedStartedTs', 'studyConfig', 'progress', 'passageId', 'generatedOptions', 'generatedAnswerIndex', 'degraded',
       'intrinsic1', 'intrinsic2', 'germane1', 'germane2', 'germane3',
       'extraneous1', 'extraneous2', 'extraneous3',
       'intrinsicMean', 'germaneMean', 'extraneousMean',
@@ -140,6 +145,8 @@ export class PostgresStore implements Store {
   listEvents() { return this.list<EventRow>('events'); }
   addScale(row: ScaleRow) { return this.insert('scales', row); }
   listScales() { return this.list<ScaleRow>('scales'); }
+  addTranslation(row: TranslationRow) { return this.insert('translations', row); }
+  listTranslations(id?: string) { return this.list<TranslationRow>('translations', id); }
   createContact(row: ParticipantContact) { return this.insert('participant_contacts', row); }
   listContacts() { return this.list<ParticipantContact>('participant_contacts'); }
   async updateContact(participantId: string, patch: Partial<ParticipantContact>): Promise<ParticipantContact> {

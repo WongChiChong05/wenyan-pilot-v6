@@ -11,9 +11,10 @@ export async function GET(req: Request) {
   const readers = {
     participants: () => store.listParticipants(), responses: () => store.listResponses(),
     interactions: () => store.listInteractions(), events: () => store.listEvents(), scales: () => store.listScales(),
+    translations: () => store.listTranslations(),
   };
   if (table === 'wide') {
-    const rows = buildWideRows(await store.listParticipants(), await store.listResponses(), await store.listScales());
+    const rows = buildWideRows(await store.listParticipants(), await store.listResponses(), await store.listScales(), await store.listTranslations());
     return csv(rows, 'wide.csv');
   }
   if (table === 'contact-reminders') {

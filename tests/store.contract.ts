@@ -39,6 +39,24 @@ export function storeContract(name: string, using: (fn: (store: Store) => Promis
       assert.deepEqual(rows.map(r => r.id), [a.id, b.id]);
       assert.equal(toCsv(rows), toCsv([{ ...a, configVersion: rows[0].configVersion }, { ...b, configVersion: rows[1].configVersion }]));
     }));
+    it('v6: round-trips progress, interaction passage ids and translation rows; refuses duplicates', () => using(async store => {
+      const p = makeParticipant('socratic');
+      p.progress = { trainingIndex: 1, passageEnteredTs: ['2026-09-29T00:00:00.000Z', '2026-09-29T00:05:00.000Z'], translation: null };
+      await store.createParticipant(p);
+      assert.deepEqual((await store.getParticipant(p.id))?.progress, p.progress);
+      await store.addInteraction({ id: randomUUID(), participantId: p.id, passageId: 'T5', interactionId: randomUUID(), inTargetSentence: 'TS5',
+        granularity: 'sentence', highlightText: '問所以', turnIndex: 0, actor: 'user', type: 'user', text: 'x', strategy: null,
+        latencyMs: null, rawResponse: null, leakFlags: [], ts: new Date().toISOString() });
+      assert.equal((await store.listInteractions(p.id))[0].passageId, 'T5');
+      const row = { id: randomUUID(), participantId: p.id, stage: 'S1b' as const, itemId: 'B11-1', text: '彭城王有快牛', skipped: false,
+        timedOut: false, triedFirst: true, firstInputMs: 1500, firstHelpKind: null, firstHelpMs: null, draftAtFirstHelp: null,
+        hintMs: null, explanationMs: null, submitMs: 9000, ts: new Date().toISOString() };
+      await store.addTranslation(row);
+      const saved = (await store.listTranslations(p.id))[0];
+      assert.equal(saved.text, '彭城王有快牛'); assert.equal(saved.triedFirst, true); assert.equal(saved.firstHelpKind, null);
+      assert.equal(saved.firstInputMs, 1500);
+      await assert.rejects(store.addTranslation({ ...row, id: randomUUID() }));
+    }));
     it('round-trips the differentiated cognitive-load row while omitting legacy fields', () => using(async store => {
       const p = makeParticipant('control'); await store.createParticipant(p);
       await store.addScale({

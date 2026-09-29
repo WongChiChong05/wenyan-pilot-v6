@@ -1,6 +1,6 @@
 import { CONFIG } from './config';
 import type { Store } from './store';
-import type { EventRow, InteractionRow, Participant, ParticipantContact, ResponseRow, ScaleRow } from './types';
+import type { EventRow, InteractionRow, Participant, ParticipantContact, ResponseRow, ScaleRow, TranslationRow } from './types';
 
 export interface Db {
   participants: Participant[];
@@ -9,8 +9,9 @@ export interface Db {
   events: EventRow[];
   scales: ScaleRow[];
   contacts: ParticipantContact[];
+  translations: TranslationRow[];
 }
-export const emptyDb = (): Db => ({ participants: [], responses: [], interactions: [], events: [], scales: [], contacts: [] });
+export const emptyDb = (): Db => ({ participants: [], responses: [], interactions: [], events: [], scales: [], contacts: [], translations: [] });
 const copy = <T>(value: T): T => structuredClone(value);
 const stamped = <T extends { configVersion?: string }>(value: T): T =>
   ({ ...copy(value), configVersion: value.configVersion ?? CONFIG.version });
@@ -58,6 +59,15 @@ export class SnapshotStore implements Store {
     this.db.scales.push(stamped(row));
   }
   async listScales() { return copy(this.db.scales); }
+  async addTranslation(row: TranslationRow) {
+    if (this.db.translations.some(r => r.participantId === row.participantId && r.stage === row.stage && r.itemId === row.itemId)) {
+      throw new Error('duplicate translation');
+    }
+    this.db.translations.push(stamped(row));
+  }
+  async listTranslations(id?: string) {
+    return copy(id ? this.db.translations.filter(r => r.participantId === id) : this.db.translations);
+  }
   async createContact(row: ParticipantContact) {
     if (this.db.contacts.some(contact => contact.participantId === row.participantId)) throw new Error('duplicate contact');
     this.db.contacts.push(stamped(row));

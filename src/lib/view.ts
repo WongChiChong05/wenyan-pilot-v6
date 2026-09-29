@@ -1,9 +1,10 @@
 import { ITEMS_BY_STAGE } from '../content/items';
-import { DELAYED_PASSAGE, LEARNING_PASSAGE, PRETEST_PASSAGE, TRANSFER_PASSAGE } from '../content/passages';
+import { PASSAGES, PRETEST_PASSAGE, TRAINING_PASSAGES } from '../content/passages';
+import { TRANSLATION_BY_STAGE, TRANSLATION_PASSAGE } from '../content/translation';
 import { CONFIG } from './config';
-import { stageLimits } from './engine';
-import { lowerBoundApplies, lowerBoundMet, showsTargetHints } from './highlight';
-import type { Item, Participant, Stage } from './types';
+import { stageLimits, trainingPassageFor } from './engine';
+import { lowerBoundApplies, lowerBoundMet, requiredTargets, showsTargetHints } from './highlight';
+import type { Item, Participant, Passage, Stage, TranslationStage } from './types';
 
 /** Items as the client may see them: the answer key is stripped here, once. */
 export function publicItem(i: Item) {
@@ -46,7 +47,53 @@ export interface StageView {
     /** whether this arm gets the conversation sidebar at all (control does not) */
     sidebar: boolean;
   };
+  /** v6 S2: which of the training passages is on screen */
+  training?: { index: number; total: number };
+  /**
+   * v6 translation stages. The reference translation and rubric never leave the server;
+   * the hint and explanation are sent only once the reader has asked for them.
+   */
+  translation?: {
+    stage: TranslationStage;
+    index: number;
+    total: number;
+    sentence: string;
+    allowHelp: boolean;
+    hint: string | null;
+    explanation: string | null;
+    /** S5b: the sentences are finished and the decode items are on screen */
+    done: boolean;
+  };
   config: { version: string };
+}
+
+/** A passage as the client may see it. */
+function publicPassage(passage: Passage, options: { annotations: boolean; targets?: { id: string; text: string; done: boolean }[] }) {
+  return {
+    id: passage.id,
+    title: passage.displayTitle,
+    text: passage.text,
+    annotations: options.annotations ? passage.annotations.map((a) => ({ term: a.term, gloss: a.gloss })) : [],
+    targets: options.targets ?? [],
+    showAnnotations: options.annotations,
+  };
+}
+
+function translationView(p: Participant, stage: TranslationStage): StageView['translation'] {
+  const items = TRANSLATION_BY_STAGE[stage];
+  const state = p.progress?.translation?.stage === stage ? p.progress.translation : null;
+  const index = Math.min(state?.index ?? 0, items.length - 1);
+  const item = items[index];
+  return {
+    stage,
+    index,
+    total: items.length,
+    sentence: item.sentence,
+    allowHelp: stage !== 'S5b',
+    hint: state?.hintTs ? item.hint ?? null : null,
+    explanation: state?.explanationTs ? item.explanation ?? null : null,
+    done: Boolean(state?.translationsDone),
+  };
 }
 
 export function buildStageView(p: Participant): StageView {
@@ -65,47 +112,47 @@ export function buildStageView(p: Participant): StageView {
       return {
         ...base,
         arm: 'hidden', // the reader never learns the arm, and before S1 there is none
-        passage: {
-          id: PRETEST_PASSAGE.id,
-          title: PRETEST_PASSAGE.displayTitle,
-          text: PRETEST_PASSAGE.text,
-          annotations: [],
-          targets: [],
-          showAnnotations: false,
-        },
+        passage: publicPassage(PRETEST_PASSAGE, { annotations: false }),
         items: ITEMS_BY_STAGE.S1.map(publicItem),
       };
+    case 'S1b':
+    case 'S5a':
+      return {
+        ...base,
+        arm: 'hidden',
+        passage: publicPassage(PASSAGES[TRANSLATION_PASSAGE[p.stage]], { annotations: true }),
+        translation: translationView(p, p.stage),
+      };
+    case 'S5b': {
+      const translation = translationView(p, 'S5b')!;
+      // Sentences first (儉嗇 1), then the decode items on 儉嗇 9, on one stage clock.
+      return translation.done
+        ? { ...base, arm: 'hidden', passage: publicPassage(PASSAGES.J9, { annotations: true }), items: ITEMS_BY_STAGE.S5b.map(publicItem), translation }
+        : { ...base, arm: 'hidden', passage: publicPassage(PASSAGES[TRANSLATION_PASSAGE.S5b], { annotations: true }), translation };
+    }
     case 'S2': {
-      // Two separate questions now: is this arm GATED (nobody is), and does it see the
-      // sentences shaded (the AI arms do).
+      // v6: one training passage at a time. The AI arms are gated on its required
+      // targets; every arm sees those targets shaded (CONFIG.targetHintArms).
+      const passage = trainingPassageFor(p);
       const applies = lowerBoundApplies(p.arm);
       const hints = showsTargetHints(p.arm);
       const doneSet = new Set(p.completedTargets);
+      const required = requiredTargets(passage);
       return {
         ...base,
         arm: p.arm,
-        passage: {
-          id: LEARNING_PASSAGE.id,
-          title: LEARNING_PASSAGE.displayTitle,
-          text: LEARNING_PASSAGE.text,
-          annotations: LEARNING_PASSAGE.annotations.map((a) => ({ term: a.term, gloss: a.gloss })),
-          targets: hints
-            ? LEARNING_PASSAGE.targets.map((t) => ({
-                id: t.id,
-                text: t.text,
-                done: doneSet.has(t.id),
-              }))
-            : [],
-          showAnnotations: true,
-        },
+        passage: publicPassage(passage, {
+          annotations: true,
+          targets: hints ? required.map((t) => ({ id: t.id, text: t.text, done: doneSet.has(t.id) })) : [],
+        }),
         lowerBound: {
           applies,
-          required: applies ? LEARNING_PASSAGE.targets.length : 0,
-          done: p.completedTargets.length,
-          met: lowerBoundMet(LEARNING_PASSAGE, p.completedTargets, p.arm),
+          required: applies ? required.length : 0,
+          done: required.filter((t) => doneSet.has(t.id)).length,
+          met: lowerBoundMet(passage, p.completedTargets, p.arm),
         },
-        // Every arm now, since usage is voluntary and time is the only matched quantity.
         minSeconds: CONFIG.minReadingSeconds,
+        training: { index: TRAINING_PASSAGES.indexOf(passage), total: TRAINING_PASSAGES.length },
         assist: {
           locked: p.active !== null,
           pendingSelection: p.active?.selection ?? null,
@@ -117,57 +164,8 @@ export function buildStageView(p: Participant): StageView {
         },
       };
     }
-    case 'S3':
-      // The passage IS shown here, matching S5 and S6 — a reader answering about a text
-      // they cannot see is being tested on memory, which is not what this study measures.
-      //
-      // The ANNOTATIONS are not. S3-01 and S3-02 are check-level items that ask what the
-      // annotation said; showing the annotation list beside them turns those two into a
-      // lookup exercise and they stop measuring whether the reader used the annotations
-      // during S2.
-      return {
-        ...base,
-        arm: p.arm,
-        passage: {
-          id: LEARNING_PASSAGE.id,
-          title: LEARNING_PASSAGE.displayTitle,
-          text: LEARNING_PASSAGE.text,
-          annotations: [],
-          targets: [],
-          showAnnotations: false,
-        },
-        items: ITEMS_BY_STAGE.S3.map(publicItem),
-      };
     case 'S4':
       return { ...base, arm: 'hidden' };
-    case 'S5':
-      return {
-        ...base,
-        arm: 'hidden',
-        passage: {
-          id: TRANSFER_PASSAGE.id,
-          title: TRANSFER_PASSAGE.displayTitle,
-          text: TRANSFER_PASSAGE.text,
-          annotations: [], // by design: no annotations in the transfer passage
-          targets: [],
-          showAnnotations: false,
-        },
-        items: ITEMS_BY_STAGE.S5.map(publicItem),
-      };
-    case 'S6':
-      return {
-        ...base,
-        arm: 'hidden',
-        passage: {
-          id: DELAYED_PASSAGE.id,
-          title: DELAYED_PASSAGE.displayTitle,
-          text: DELAYED_PASSAGE.text,
-          annotations: [],
-          targets: [],
-          showAnnotations: false,
-        },
-        items: ITEMS_BY_STAGE.S6.map(publicItem),
-      };
     default:
       return { ...base, arm: 'hidden' };
   }

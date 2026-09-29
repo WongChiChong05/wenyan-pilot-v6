@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { LEARNING_PASSAGE } from '../content/passages';
+import { ALL_TARGETS, PASSAGES, TRAINING_PASSAGES } from '../content/passages';
 import { CONFIG } from './config';
 import { classifyGranularity, lowerBoundMet, matchTarget, neighborhoodOf } from './highlight';
 import { endPosition, initialLadder, reduce, explanationAllowed } from './ladder';
@@ -27,7 +27,7 @@ import {
 } from './prompts';
 import { REASON_REJECT_MESSAGE, ruleCheckReason } from './reasonGate';
 import type { Store } from './store';
-import type { ActiveInteraction, InteractionRow, Participant, TargetSentence } from './types';
+import type { ActiveInteraction, InteractionRow, Participant, Passage, TargetSentence } from './types';
 
 export interface AssistTurn {
   interactionId: string;
@@ -85,9 +85,32 @@ interface GeneratedOpenQuestion {
   leakFlags: string[];
 }
 
+/** v6: the training passage a participant is currently reading in S2. */
+export function trainingPassageFor(p: Pick<Participant, 'progress'>): Passage {
+  const i = p.progress?.trainingIndex ?? 0;
+  return TRAINING_PASSAGES[Math.min(Math.max(i, 0), TRAINING_PASSAGES.length - 1)];
+}
+
+/** The passage an open interaction belongs to (falls back to the current training passage). */
+export function passageOfInteraction(p: Pick<Participant, 'progress' | 'active'>): Passage {
+  const id = p.active?.passageId;
+  return (id && PASSAGES[id]) || trainingPassageFor(p);
+}
+
 export class Engine {
   private readonly store: Store;
   private readonly llm: LlmProvider;
+  /**
+   * v6: the training passage this request is about. Set by every public entry point
+   * (startAssist, reply, cancel) before anything else runs; every prompt, gate and log
+   * row below reads it, so a reader on passage 2 is never judged against passage 1.
+   */
+  private passage: Passage = TRAINING_PASSAGES[0];
+
+  private use(p: Participant): Passage {
+    this.passage = passageOfInteraction(p);
+    return this.passage;
+  }
 
   constructor(store: Store, llm: LlmProvider = getProvider()) {
     this.store = store;
@@ -96,11 +119,11 @@ export class Engine {
 
   private target(id: string | null): TargetSentence | null {
     if (!id) return null;
-    return LEARNING_PASSAGE.targets.find((t) => t.id === id) ?? null;
+    return ALL_TARGETS.find((t) => t.id === id) ?? null;
   }
 
   private async log(row: Omit<InteractionRow, 'id' | 'ts'>) {
-    await this.store.addInteraction({ ...row, id: randomUUID(), ts: new Date().toISOString() });
+    await this.store.addInteraction({ passageId: this.passage.id, ...row, id: randomUUID(), ts: new Date().toISOString() });
   }
 
   /**
@@ -111,6 +134,7 @@ export class Engine {
    * rewrites the selection text based on it.
    */
   async startAssist(p: Participant, selection: string, start?: number): Promise<AssistTurn> {
+    this.passage = trainingPassageFor(p);
     // Only the passage body may be highlighted. The CSS stops a reader dragging across
     // the instructions, the annotation list or the sidebar; this is the actual guarantee,
     // because CSS is trivially bypassed and a highlight of UI chrome would be logged as a
@@ -118,7 +142,7 @@ export class Engine {
     const strip = (s: string) => s.replace(/\s/g, '');
     const trimmed = selection.trim();
     const bare = strip(trimmed);
-    if (bare.length === 0 || !strip(LEARNING_PASSAGE.text).includes(bare)) {
+    if (bare.length === 0 || !strip(this.passage.text).includes(bare)) {
       throw new Error('selection is not part of the passage');
     }
 
@@ -128,15 +152,16 @@ export class Engine {
     // make it fall back to substring.
     const validOffset =
       typeof start === 'number' &&
-      LEARNING_PASSAGE.text.slice(start, start + trimmed.length) === trimmed;
-    const selStart = validOffset ? (start as number) : LEARNING_PASSAGE.text.indexOf(trimmed);
+      this.passage.text.slice(start, start + trimmed.length) === trimmed;
+    const selStart = validOffset ? (start as number) : this.passage.text.indexOf(trimmed);
     const selEnd = selStart >= 0 ? selStart + trimmed.length : -1;
 
     const granularity = classifyGranularity(trimmed);
-    const targetId = matchTarget(LEARNING_PASSAGE, trimmed, selStart >= 0 ? selStart : undefined);
+    const targetId = matchTarget(this.passage, trimmed, selStart >= 0 ? selStart : undefined);
     const target = this.target(targetId);
     const active: ActiveInteraction = {
       interactionId: randomUUID(),
+      passageId: this.passage.id,
       answerMode: 'open',
       targetId,
       selection,
@@ -190,7 +215,7 @@ export class Engine {
         kind: 'explanation',
         text,
         completed: false,
-        lowerBoundMet: lowerBoundMet(LEARNING_PASSAGE, saved.completedTargets, p.arm),
+        lowerBoundMet: lowerBoundMet(this.passage, saved.completedTargets, p.arm),
         completedTargetIds: saved.completedTargets,
         degraded,
         range: rangeOf(active),
@@ -213,7 +238,7 @@ export class Engine {
       text: step.text,
       choice: step.choice,
       completed: false,
-      lowerBoundMet: lowerBoundMet(LEARNING_PASSAGE, saved.completedTargets, p.arm),
+      lowerBoundMet: lowerBoundMet(this.passage, saved.completedTargets, p.arm),
       completedTargetIds: saved.completedTargets,
       degraded: step.degraded,
       range: rangeOf(active),
@@ -233,13 +258,13 @@ export class Engine {
     // (focus.ts: deriveFocus) when the perspective is submitted. Nothing is length-limited
     // on the reader's side. The legacy multiple-choice focus path below is unreachable.
     if (active.answerMode === 'open') {
-      const annotated = LEARNING_PASSAGE.annotations.find(a => a.term === trimmed)?.term;
+      const annotated = this.passage.annotations.find(a => a.term === trimmed)?.term;
       return this.askPerspective(p, annotated ? withFocus(active, annotated, 'suggestion') : active);
     }
     // Readers in either AI arm who highlighted more than one possible word first type the
     // exact word/character they meant. The model only proposes substrings; the reader
     // remains the authority, and "other" is validated against the original highlight.
-    const knownTerm = LEARNING_PASSAGE.annotations.find(a => a.term === trimmed)?.term;
+    const knownTerm = this.passage.annotations.find(a => a.term === trimmed)?.term;
     const visibleChars = [...trimmed.replace(/[^\u3400-\u9fff]/gu, '')];
     // Target sentences keep their pre-written ladder (handled by the caller). Replacing it with a generated
     // focus-specific ladder would break explanation parity between the two AI arms.
@@ -257,7 +282,7 @@ export class Engine {
           kind: 'focus',
           text: prompt,
           completed: false,
-          lowerBoundMet: lowerBoundMet(LEARNING_PASSAGE, saved.completedTargets, p.arm),
+          lowerBoundMet: lowerBoundMet(this.passage, saved.completedTargets, p.arm),
           completedTargetIds: saved.completedTargets,
           range: rangeOf(active),
         };
@@ -297,7 +322,7 @@ export class Engine {
           text: prompt,
           focus: { options: generated.options, allowOther: true },
           completed: false,
-          lowerBoundMet: lowerBoundMet(LEARNING_PASSAGE, saved.completedTargets, p.arm),
+          lowerBoundMet: lowerBoundMet(this.passage, saved.completedTargets, p.arm),
           completedTargetIds: saved.completedTargets,
           range: rangeOf(active),
         };
@@ -320,7 +345,7 @@ export class Engine {
       kind: 'perspective',
       text: prompt,
       completed: false,
-      lowerBoundMet: lowerBoundMet(LEARNING_PASSAGE, saved.completedTargets, p.arm),
+      lowerBoundMet: lowerBoundMet(this.passage, saved.completedTargets, p.arm),
       completedTargetIds: saved.completedTargets,
       range: rangeOf(active),
     };
@@ -465,6 +490,7 @@ export class Engine {
   ): Promise<AssistTurn> {
     const active = p.active;
     if (!active) throw new Error('no open interaction');
+    this.use(p);
     const target = this.target(active.targetId);
 
     if (payload.kind === 'read_done') {
@@ -765,10 +791,31 @@ export class Engine {
       throw new Error('answer and reason required');
     }
     await this.logUser(p, active, `答案：${answer}｜理由：${reason}`);
-    const accepted = await this.judgeReason(p.id, reason, target, active, [], false, {
+    let accepted = await this.judgeReason(p.id, reason, target, active, [], false, {
       question: active.pendingQuestion,
       answer,
     });
+    // v6 (D7): after CONFIG.maxReasonRejections rejections on this rung the next reason is
+    // force-accepted and flagged. Without a cap, a required target could trap a reader who
+    // cannot phrase a reason the gate accepts; the flag keeps these rungs separable.
+    let forced = false;
+    if (!accepted && active.ladder.reasonRejections >= CONFIG.maxReasonRejections) {
+      accepted = true;
+      forced = true;
+      await this.store.addEvent({
+        id: randomUUID(),
+        participantId: p.id,
+        event: 'reason_forced',
+        payload: {
+          interactionId: active.interactionId,
+          passageId: this.passage.id,
+          targetId: active.targetId,
+          step: active.ladder.step,
+          rejectionsOnRung: active.ladder.reasonRejections,
+        },
+        ts: new Date().toISOString(),
+      });
+    }
     if (!accepted) {
       const ladder = {
         ...active.ladder,
@@ -785,6 +832,7 @@ export class Engine {
     const next = {
       ...reduce(active.ladder, { kind: 'open_response' }),
       reasonRejections: 0,
+      reasonInsufficient: active.ladder.reasonInsufficient || forced,
     };
     if (explanationAllowed(next)) {
       const { text, degraded } = await this.explanationFor(p, active, target);
@@ -831,7 +879,7 @@ export class Engine {
       kind,
       text,
       completed: false,
-      lowerBoundMet: lowerBoundMet(LEARNING_PASSAGE, fresh?.completedTargets ?? [], p.arm),
+      lowerBoundMet: lowerBoundMet(this.passage, fresh?.completedTargets ?? [], p.arm),
       completedTargetIds: fresh?.completedTargets ?? [],
       range: rangeOf(active),
     };
@@ -874,7 +922,7 @@ export class Engine {
     const rule = ruleCheckReason(reason, {
       sentenceText,
       optionTexts: options,
-      passageText: LEARNING_PASSAGE.text,
+      passageText: this.passage.text,
     });
     const audit = async (accepted: boolean, details: Record<string, unknown>) => {
       await this.store.addEvent({ id: randomUUID(), participantId,
@@ -930,7 +978,7 @@ export class Engine {
         const res = await this.llm.complete(
           directSystemPrompt(),
           directTurnPrompt({
-            passage: LEARNING_PASSAGE.text,
+            passage: this.passage.text,
           selection: effectiveSelection(active),
           granularity: effectiveGranularity(active),
             perspective: perspectiveOf(active),
@@ -940,7 +988,7 @@ export class Engine {
         latencyMs = (latencyMs ?? 0) + res.latencyMs;
         const parsed = parseJsonObject<{ text?: unknown }>(res.text);
         const candidate = typeof parsed?.text === 'string' ? parsed.text.trim() : '';
-        const report = checkDirectOutput(candidate, LEARNING_PASSAGE.text);
+        const report = checkDirectOutput(candidate, this.passage.text);
         const rejected = !res.ok || !candidate ? ['generation_failed'] : report.flags;
         attempts.push({ raw: res.raw, flags: rejected });
         if (!rejected.length) { text = candidate; break; }
@@ -990,10 +1038,10 @@ export class Engine {
       const end = active.focusEnd ?? active.selectionEnd;
       const neighborhood =
         start !== undefined && end !== undefined
-          ? neighborhoodOf(LEARNING_PASSAGE.text, start, end)
+          ? neighborhoodOf(this.passage.text, start, end)
           : undefined;
       const user = socraticTurnPrompt({
-        passage: LEARNING_PASSAGE.text,
+        passage: this.passage.text,
         selection: effectiveSelection(active),
         selectionStart: start,
         selectionEnd: end,
@@ -1088,7 +1136,7 @@ export class Engine {
     const start = active.focusStart ?? active.selectionStart;
     const end = active.focusEnd ?? active.selectionEnd;
     const neighborhood = start !== undefined && end !== undefined
-      ? neighborhoodOf(LEARNING_PASSAGE.text, start, end)
+      ? neighborhoodOf(this.passage.text, start, end)
       : undefined;
     const attempts: { raw: string; flags: string[] }[] = [];
     let latencyMs = 0;
@@ -1096,7 +1144,7 @@ export class Engine {
       const result = await this.llm.complete(
         socraticOpenSystemPrompt(),
         socraticTurnPrompt({
-          passage: LEARNING_PASSAGE.text,
+          passage: this.passage.text,
           selection: effectiveSelection(active),
           selectionStart: start,
           selectionEnd: end,
@@ -1156,7 +1204,7 @@ export class Engine {
     const start = active.selectionStart;
     const end = active.selectionEnd;
     const neighborhood = start !== undefined && end !== undefined
-      ? neighborhoodOf(LEARNING_PASSAGE.text, start, end)
+      ? neighborhoodOf(this.passage.text, start, end)
       : undefined;
     const attempts: { raw: string; flags: string[] }[] = [];
     let latencyMs = 0;
@@ -1168,7 +1216,7 @@ export class Engine {
       latencyMs += result.latencyMs;
       const parsed = parseJsonObject<{ options?: unknown }>(result.text);
       const report = result.ok
-        ? validateFocusOptions(parsed?.options, active.selection, LEARNING_PASSAGE.annotations)
+        ? validateFocusOptions(parsed?.options, active.selection, this.passage.annotations)
         : { ok: false, options: [] as string[], flags: ['focus:generation_failed'] };
       attempts.push({ raw: result.raw, flags: report.flags });
       if (report.ok) {
@@ -1181,7 +1229,7 @@ export class Engine {
         };
       }
     }
-    const options = fallbackFocusOptions(active.selection, LEARNING_PASSAGE.annotations);
+    const options = fallbackFocusOptions(active.selection, this.passage.annotations);
     await this.store.addEvent({
       id: randomUUID(),
       participantId: p.id,
@@ -1202,6 +1250,7 @@ export class Engine {
   async cancel(p: Participant): Promise<AssistTurn> {
     const active = p.active;
     if (!active) throw new Error('no open interaction');
+    this.use(p);
     if (!isCancellable(active)) throw new Error('cannot cancel after answering');
     await this.logUser(p, active, '（取消這次選取）');
     await this.store.addEvent({
@@ -1225,7 +1274,7 @@ export class Engine {
       text: '',
       completed: false,
       cancelled: true,
-      lowerBoundMet: lowerBoundMet(LEARNING_PASSAGE, saved.completedTargets, p.arm),
+      lowerBoundMet: lowerBoundMet(this.passage, saved.completedTargets, p.arm),
       completedTargetIds: saved.completedTargets,
     };
   }
@@ -1254,16 +1303,16 @@ export class Engine {
       },
       ts: new Date().toISOString(),
     });
-    const met = lowerBoundMet(LEARNING_PASSAGE, completedTargets, p.arm);
+    const met = lowerBoundMet(this.passage, completedTargets, p.arm);
     if (
-      lowerBoundMet(LEARNING_PASSAGE, completedTargets) &&
-      !lowerBoundMet(LEARNING_PASSAGE, p.completedTargets)
+      lowerBoundMet(this.passage, completedTargets) &&
+      !lowerBoundMet(this.passage, p.completedTargets)
     ) {
       await this.store.addEvent({
         id: randomUUID(),
         participantId: p.id,
         event: 'lower_bound_met',
-        payload: { at: new Date().toISOString() },
+        payload: { at: new Date().toISOString(), passageId: this.passage.id },
         ts: new Date().toISOString(),
       });
     }
@@ -1372,9 +1421,10 @@ function withFocus(
   };
 }
 
-// Mental effort is recorded immediately after S2. Putting S3 first would make the
-// retrospective rating mix reading load with the immediate test itself.
-export const STAGE_ORDER: Participant['stage'][] = ['S0', 'S1', 'S2', 'S4', 'S3', 'S5', 'S6', 'DONE'];
+// v6 order. Mental effort is still recorded immediately after S2. S5b (no help, the
+// performance score) comes before S5a (help available) so the score is taken before the
+// reader has seen any hint or explanation; S1 -> S1b mirrors the same no-help -> help order.
+export const STAGE_ORDER: Participant['stage'][] = ['S0', 'S1', 'S1b', 'S2', 'S4', 'S5b', 'S5a', 'DONE'];
 
 export function nextStage(stage: Participant['stage']): Participant['stage'] {
   const i = STAGE_ORDER.indexOf(stage);
@@ -1455,7 +1505,7 @@ export function pendingTurnFor(
       focus: { options: active.focusOptions, allowOther: true },
     };
   }
-  const target = LEARNING_PASSAGE.targets.find((t) => t.id === active.targetId) ?? null;
+  const target = ALL_TARGETS.find((t) => t.id === active.targetId) ?? null;
   const bottom = choiceForSelection(target, effectiveSelection(active));
 
   const layerSpec =

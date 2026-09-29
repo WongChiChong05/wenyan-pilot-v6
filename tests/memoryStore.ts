@@ -11,6 +11,7 @@ export class MemoryStore extends SnapshotStore {
   get events() { return this.db.events; }
   get scales() { return this.db.scales; }
   get contacts() { return this.db.contacts; }
+  get translations() { return this.db.translations; }
   transaction<T>(fn: (store: Store) => Promise<T>, _options?: { assignment?: boolean }): Promise<T> {
     const next = this.queue.then(async () => {
       const working = structuredClone(this.db);

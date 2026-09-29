@@ -273,3 +273,12 @@
   cursor: default;
   opacity: 0.5;
 }
+
+/* v6: required target sentences, shaded in every arm */
+.target-shade { background: #e8f0fb; border-radius: 2px; }
+.target-shade.done { background: #e6f4ea; }
+
+/* v6: sentence translation stages */
+.translate-sentence { font-size: 20px; letter-spacing: 1px; background: #fff; border: 1px solid #d8d8d8; border-radius: 6px; padding: 12px 16px; margin: 16px 0; }
+.translate-help { font-size: 15px; background: #fbfaf3; border-left: 3px solid #d6a100; padding: 8px 12px; }
+.translate-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
