@@ -274,6 +274,23 @@ describe('v5.9 perspective step and strategy removal', () => {
     expect(deriveFocus('帝甚不平', '')).toBeNull();
   });
 
+  it('sends the reason judge the whole training passage, not just the sentence (v6.1)', async () => {
+    const judged: string[] = [];
+    const llm = new MockProvider((system, user) => {
+      if (system.includes('有沒有說明他為什麼得出自己的答案')) { judged.push(user); return JSON.stringify({ verdict: 'accept' }); }
+      return JSON.stringify({ type: 'question', text: question });
+    });
+    const store = new MemoryStore(); const engine = new Engine(store, llm);
+    const p = makeParticipant('socratic');
+    await store.createParticipant(p);
+    const first = await engine.startAssist(p, '並窮綺麗，以飾輿服');
+    expect(first.kind).toBe('question');
+    // No Han characters, so the rule layer cannot decide and the model is asked.
+    await engine.reply((await store.getParticipant(p.id))!, { kind: 'answer', text: 'Shi and Wang', reason: 'two people did it' });
+    expect(judged).toHaveLength(1);
+    expect(judged[0]).toContain(`全文：「${LEARNING_PASSAGE.text}」`);
+  });
+
   it('defaults an empty perspective to meaning and asks for meaning at the last rung', async () => {
     const prompts: string[] = [];
     const llm = new MockProvider((system, user) => {

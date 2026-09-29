@@ -316,6 +316,12 @@ describe('reason gate rules', () => {
     expect(user).toContain('王武子很有錢');
     expect(system).toContain('任何語言');
   });
+  it('gives the model judge the whole passage when one is passed (v6.1)', () => {
+    const { system, user } = reasonJudgePrompt({ reason: 'two people', sentence: '並窮綺麗，以飾輿服',
+      options: [], passage: '石崇與王愷爭豪，並窮綺麗，以飾輿服。' });
+    expect(user.startsWith('全文：「石崇與王愷爭豪，並窮綺麗，以飾輿服。」')).toBe(true);
+    expect(system).toContain('不要用它來判斷答案對錯');
+  });
   it('makes the last rung a translation task (v5.11)', () => {
     expect(openFinalQuestion('以鐵如意擊之，應手而碎')).toBe('現在請把「以鐵如意擊之，應手而碎」譯成白話，並寫出你的判斷依據。');
     expect(openFinalQuestion('帝甚不平', { text: '意思', source: 'default' })).toContain('譯成白話');

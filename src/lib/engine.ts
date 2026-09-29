@@ -933,6 +933,7 @@ export class Engine {
     if (rule.verdict !== 'undecided') return audit(rule.verdict === 'accept', { source: 'rule', rule: rule.rule });
     const { system, user } = reasonJudgePrompt({
       reason, sentence: sentenceText, options, question: open?.question, answer: open?.answer,
+      passage: this.passage.text,
     });
     const res = await this.llm.complete(system, user);
     const parsed = parseJsonObject<{ verdict: string }>(res.text);

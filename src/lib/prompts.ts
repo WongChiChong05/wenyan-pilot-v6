@@ -294,16 +294,24 @@ export function reasonJudgePrompt(args: {
    *  cannot tell whether the reason supports the answer, and rejected relevant reasons. */
   question?: string;
   answer?: string;
+  /**
+   * v6.1: the whole passage the reader is working in. The rungs send readers to clues
+   * outside the selected sentence (「主語在前文」), so the judge sees everything the reader
+   * sees instead of a hand-picked neighbourhood. Used only to recognise that a reason points
+   * at the text; the judge still does not grade correctness.
+   */
+  passage?: string;
 }): { system: string; user: string } {
   return {
     system: `你在判斷讀者的理由「有沒有說明他為什麼得出自己的答案」，不判斷答案或理由對不對。
 理由是用來支持讀者自己的答案，不需要解釋字詞；理由可以用任何語言寫。
+理由可以引用全文任何地方的字詞（不限於讀者選取的句子）；全文只供你辨認理由指的是哪裡，不要用它來判斷答案對錯。
 
 接受：指出原文的字詞或位置／說明因果／和白話或其他句子比較／推論錯誤但有講原因。
 退回：空白或過短／沒有內容的說法（不知道、猜的、感覺、隨便）／只重複答案或選項文字／與問題和答案都無關。
 
 只輸出 JSON：{"verdict":"accept"|"reject","why":"不超過20字"}`,
-    user: `句子：「${args.sentence}」
+    user: `${args.passage ? `全文：「${args.passage}」\n` : ''}句子：「${args.sentence}」
 ${args.question ? `讀者在回答的問題：「${args.question}」\n` : ''}${args.answer ? `讀者的答案：「${args.answer}」\n` : ''}${args.options.length ? `選項：${args.options.map((o, i) => `(${i + 1}) ${o}`).join('　')}\n` : ''}
 讀者寫的理由：「${args.reason}」`,
   };
