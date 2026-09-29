@@ -6,6 +6,7 @@ import { buildStageView } from '../src/lib/view';
 import { T5_PASSAGE } from '../src/content/passages';
 import { TRANSLATION_ITEMS } from '../src/content/translation';
 import type { Participant } from '../src/lib/types';
+import { cohenKappa, gradingSystemPrompt, gradingUserPrompt, parseGrade } from '../src/lib/grading';
 
 async function onPassage(arm: Participant['arm'], index: number) {
   const store = new MemoryStore();
@@ -92,5 +93,28 @@ describe('v6 translation view', () => {
     view = buildStageView(p);
     assert.equal(view.passage?.id, 'J9'); assert.equal(view.items?.length, 5);
     assert.ok(!JSON.stringify(view.items).includes('answerIndex'));
+  });
+});
+
+describe('v6 offline grading', () => {
+  it('refuses a point whose evidence is not in the answer, and parses a valid grade', () => {
+    const answer = '和嶠很節儉，只給了幾十顆';
+    const ok = parseGrade('{"A":{"score":1,"evidence":"很節儉"},"B":{"score":0,"evidence":"無"},"C":{"score":1,"evidence":"只給了幾十顆"}}', answer);
+    assert.ok(ok.ok);
+    const bad = parseGrade('{"A":{"score":1,"evidence":"生性極為儉樸"},"B":{"score":0,"evidence":"無"},"C":{"score":0,"evidence":"無"}}', answer);
+    assert.equal(bad.ok, false);
+    assert.equal(parseGrade('not json', answer).ok, false);
+  });
+  it('keeps arm and participant out of the grading prompt', () => {
+    const text = gradingSystemPrompt() + gradingUserPrompt(TRANSLATION_ITEMS[6], '譯文');
+    for (const word of ['socratic', 'direct', 'control', '提問', '直答', '組別', 'participant']) assert.ok(!text.includes(word));
+    assert.ok(text.includes(TRANSLATION_ITEMS[6].reference));
+  });
+  it('computes Cohen\'s kappa', () => {
+    assert.equal(cohenKappa([1, 0, 1, 0], [1, 0, 1, 0]), 1);
+    assert.equal(cohenKappa([1, 1, 0, 0], [1, 0, 1, 0]), 0);
+    assert.equal(cohenKappa([], []), null);
+    const k = cohenKappa([1, 1, 1, 0, 0, 0, 1, 0], [1, 1, 0, 0, 0, 0, 1, 1])!;
+    assert.ok(Math.abs(k - 0.5) < 1e-9);
   });
 });

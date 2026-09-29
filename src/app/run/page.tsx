@@ -955,7 +955,7 @@ function Reading({
         </p>
         {!canContinue && (
           <p style={{ fontSize: 13, color: '#666', marginTop: -12 }}>
-            時間到之前可以繼續讀，也可以繼續問。
+            {hasSidebar ? '時間到之前可以繼續讀，也可以繼續問。' : '時間到之前可以繼續讀，也可以繼續標記。'}
           </p>
         )}
       </div>

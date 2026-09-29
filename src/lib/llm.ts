@@ -189,6 +189,10 @@ export function getProvider(): LlmProvider {
   // mistaken for real content.
   return new MockProvider((system, user) => {
     if (system.includes('判斷一段中文回答')) return JSON.stringify({ verdict: 'accept' });
+    // v6 offline grader dry run: scores nothing, so a mock-graded file is obviously fake.
+    if (system.includes('文言文翻譯的評分員')) {
+      return JSON.stringify({ A: { score: 0, evidence: '示範模式' }, B: { score: 0, evidence: '示範模式' }, C: { score: 0, evidence: '示範模式' } });
+    }
     if (system.includes('是否與參考答案一致')) return JSON.stringify({ correct: false });
     if (system.includes('解說者')) {
       return JSON.stringify({ type: 'explain', text: MOCK_EXPLANATION });
